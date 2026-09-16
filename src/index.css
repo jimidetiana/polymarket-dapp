@@ -1,1 +1,77 @@
 @import "tailwindcss";
+
+/**
+ * 设计令牌。
+ *
+ * ## 为什么必须有这一层
+ *
+ * 画布（market-graph-canvas.tsx）从原项目原样搬来，它用的是语义类名
+ * （text-muted-foreground / border-border / text-success）和 CSS 变量
+ * （var(--pm-primary) / var(--pm-state-error)）。原项目是 Tailwind v3，
+ * 靠 tailwind.config.js 把这些名字映射到 :root 变量；dapp 是 v4，
+ * **配置文件不再生效**，语义类必须在 @theme 里声明才会生成 utility。
+ *
+ * 少了这一层的后果不是报错，是**静默退化**：text-muted-foreground 不生成
+ * 任何规则，文字落回继承色；border-border 没有颜色，边框变成默认灰。
+ * 整张图看起来就是「没有样式」——这正是之前页面丑的原因。
+ *
+ * ## @theme 与 :root 的分工
+ *
+ * @theme 里的 --color-* 由 Tailwind 生成对应 utility（--color-success
+ * → text-success / bg-success / border-success）。
+ * 画布里直接写死的 var(--pm-*) 不经过 Tailwind，所以同一批颜色还要在
+ * :root 下以 --pm-* 名字再暴露一次。两处指向同一组色值，改一处即可。
+ */
+@theme {
+  /* 主色：青绿。Polymarket 自己的品牌色偏这个色相 */
+  --color-primary: #05c4ad;
+  --color-primary-foreground: #0b0c0e;
+
+  /* 底色与卡片。三级递进：页面 < 卡片 < 浮层 */
+  --color-background: #0b0c0e;
+  --color-foreground: #f7f8f8;
+  --color-card: #141619;
+  --color-popover: #1a1d21;
+  --color-muted: #1a1d21;
+  --color-muted-foreground: #818b93;
+  --color-border: #2d3136;
+  --color-input: #1a1d21;
+  --color-ring: #05c4ad;
+
+  /* 状态色 */
+  --color-success: #22c55e;
+  --color-warning: #f59e0b;
+  --color-error: #ef4444;
+  --color-info: #3b82f6;
+
+  /* 中文字体放在 Inter 后面：拉丁字形用 Inter，汉字回落到系统字体。
+     反过来写会让数字和字母也用中文字体的西文字形，在密集数字里很难读。 */
+  --font-sans: Inter, "Noto Sans SC", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", "SF Mono", "Fira Code", ui-monospace, monospace;
+}
+
+/**
+ * 画布内联样式用的 --pm-* 名字。
+ * 值与上面 @theme 一一对应——搬过来的组件里写死了这些名字，不改组件。
+ */
+:root {
+  --pm-primary: #05c4ad;
+  --pm-border: #2d3136;
+  --pm-neutral-400: #818b93;
+  --pm-neutral-500: #616b74;
+  --pm-state-success: #22c55e;
+  --pm-state-warning: #f59e0b;
+  --pm-state-error: #ef4444;
+}
+
+body {
+  background: var(--color-background);
+  color: var(--color-foreground);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* 数字等宽：价格列表里 0.512 / 0.498 不等宽会左右跳，读起来很累 */
+.tnum {
+  font-variant-numeric: tabular-nums;
+}

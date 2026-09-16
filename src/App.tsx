@@ -30,11 +30,11 @@ export default function App() {
   const { graph, slots, goals, prevPrices } = useMarketGraph(match)
 
   return (
-    <div className="min-h-screen bg-neutral-950 text-neutral-100">
-      <header className="flex items-center justify-between gap-3 border-b border-neutral-800 px-4 py-2.5">
+    <div className="min-h-screen bg-background text-foreground">
+      <header className="flex items-center justify-between gap-3 border-b border-border px-4 py-2.5">
         <div className="min-w-0">
           <h1 className="text-sm font-semibold">盘口网状图</h1>
-          <p className="text-[11px] text-neutral-500">
+          <p className="text-[11px] text-muted-foreground">
             结构关系与实时价格叠在一张图上，点节点直接下单
           </p>
         </div>
@@ -47,7 +47,7 @@ export default function App() {
               setSelectedKey(null)
               setPicked(null)
             }}
-            className="max-w-[420px] truncate rounded-md border border-neutral-700 bg-neutral-900 px-2 py-1 text-xs text-neutral-200"
+            className="max-w-[420px] truncate rounded-md border border-border bg-input px-2 py-1 text-xs text-foreground"
           >
             {matches.length === 0 && <option value="">（无比赛）</option>}
             {matches.map((m) => (
@@ -60,7 +60,7 @@ export default function App() {
           <button
             type="button"
             onClick={() => setPriceMode(priceMode === 'prob' ? 'odds' : 'prob')}
-            className="rounded-md border border-neutral-700 px-2 py-1 text-[11px] text-neutral-300 hover:bg-neutral-800"
+            className="rounded-md border border-border px-2 py-1 text-[11px] text-foreground/80 hover:bg-muted"
           >
             {PRICE_MODE_LABEL[priceMode]}
           </button>
@@ -71,14 +71,14 @@ export default function App() {
 
       <main className="flex gap-3 p-3">
         {/* 左：关系图 */}
-        <section className="min-h-[70vh] min-w-0 flex-1 overflow-auto rounded-lg border border-neutral-800 bg-neutral-900/60">
+        <section className="min-h-[70vh] min-w-0 flex-1 overflow-auto rounded-lg border border-border bg-card">
           {loading ? (
             <Centered>正在拉取比赛…</Centered>
           ) : error && matches.length === 0 ? (
             <Centered>
-              <p className="text-sm text-amber-400">{error}</p>
+              <p className="text-sm text-warning">{error}</p>
               {network && (
-                <p className="max-w-md text-center text-[11px] leading-relaxed text-neutral-500">
+                <p className="max-w-md text-center text-[11px] leading-relaxed text-muted-foreground">
                   浏览器连不上 gamma-api.polymarket.com。这个接口 CORS 是全开的，
                   连不上通常是网络层被拦 —— 确认能直接打开 polymarket.com。
                 </p>
@@ -86,7 +86,7 @@ export default function App() {
               <button
                 type="button"
                 onClick={reload}
-                className="rounded-md border border-neutral-700 px-2.5 py-1 text-[11px] text-neutral-300 hover:bg-neutral-800"
+                className="rounded-md border border-border px-2.5 py-1 text-[11px] text-foreground/80 hover:bg-muted"
               >
                 重试
               </button>
@@ -122,7 +122,7 @@ export default function App() {
                   v={graph.stats.violations > 0 ? `${graph.stats.violations} 处` : '无'}
                 />
               </div>
-              <p className="mt-2 text-[10px] leading-snug text-neutral-500">
+              <p className="mt-2 text-[10px] leading-snug text-muted-foreground">
                 价格是 Gamma 快照（上一次成交价），不是可成交的买卖盘。
                 画布上标了「快照」的节点即为此。
               </p>
@@ -137,13 +137,13 @@ export default function App() {
                 <KV k="盘口" v={picked.label} />
                 <KV k="方向" v={picked.sideName ?? '—'} />
                 <KV k="盘口 id" v={picked.marketId ?? '—'} />
-                <p className="mt-2 text-[10px] leading-snug text-neutral-500">
+                <p className="mt-2 text-[10px] leading-snug text-muted-foreground">
                   下单链路（CLOB 签名 + USDC.e 授权）还没接。签名要用 EOA，
                   资金走代理钱包，signatureType 必须是 POLY_1271。
                 </p>
               </div>
             ) : (
-              <p className="text-xs text-neutral-500">点图上的节点选盘口。</p>
+              <p className="text-xs text-muted-foreground">点图上的节点选盘口。</p>
             )}
           </Panel>
         </aside>
@@ -154,7 +154,7 @@ export default function App() {
 
 function Centered({ children }: { children: React.ReactNode }) {
   return (
-    <div className="flex h-full min-h-[70vh] flex-col items-center justify-center gap-2 text-sm text-neutral-500">
+    <div className="flex h-full min-h-[70vh] flex-col items-center justify-center gap-2 text-sm text-muted-foreground">
       {children}
     </div>
   )
@@ -163,8 +163,8 @@ function Centered({ children }: { children: React.ReactNode }) {
 function KV({ k, v }: { k: string; v: string }) {
   return (
     <div className="flex items-baseline justify-between gap-2">
-      <span className="shrink-0 text-neutral-500">{k}</span>
-      <span className="truncate text-right font-mono text-neutral-200">{v}</span>
+      <span className="shrink-0 text-muted-foreground">{k}</span>
+      <span className="truncate text-right font-mono text-foreground">{v}</span>
     </div>
   )
 }

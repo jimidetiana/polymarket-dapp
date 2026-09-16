@@ -41,7 +41,7 @@ export function ConnectWallet() {
         type="button"
         onClick={() => injected && connect({ connector: injected })}
         disabled={isPending || !injected}
-        className="rounded-md bg-sky-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-sky-500 disabled:opacity-50"
+        className="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-50"
       >
         {isPending ? '连接中…' : !injected ? '未检测到钱包' : '连接钱包'}
       </button>
@@ -53,7 +53,7 @@ export function ConnectWallet() {
       <button
         type="button"
         onClick={() => switchChain({ chainId: polygon.id })}
-        className="rounded-md border border-amber-500/50 bg-amber-500/10 px-3 py-1.5 text-xs font-medium text-amber-300 hover:bg-amber-500/20"
+        className="rounded-md border border-warning/50 bg-warning/10 px-3 py-1.5 text-xs font-medium text-warning hover:bg-warning/20"
       >
         切到 Polygon 网络
       </button>
@@ -62,11 +62,11 @@ export function ConnectWallet() {
 
   return (
     <div className="flex items-center gap-2">
-      <span className="font-mono text-xs text-neutral-300">{shortAddr(address)}</span>
+      <span className="font-mono text-xs tnum text-foreground">{shortAddr(address)}</span>
       <button
         type="button"
         onClick={() => disconnect()}
-        className="rounded-md border border-neutral-700 px-2 py-1 text-[11px] text-neutral-400 hover:bg-neutral-800"
+        className="rounded-md border border-border px-2 py-1 text-[11px] text-muted-foreground hover:bg-muted hover:text-foreground"
       >
         断开
       </button>
@@ -130,7 +130,7 @@ export function WalletPanel() {
   if (!isConnected) {
     return (
       <Panel title="钱包">
-        <p className="text-xs text-neutral-500">未连接。连接后显示链上余额。</p>
+        <p className="text-xs text-muted-foreground">未连接。连接后显示链上余额。</p>
       </Panel>
     )
   }
@@ -138,7 +138,7 @@ export function WalletPanel() {
   if (!onPolygon) {
     return (
       <Panel title="钱包">
-        <p className="text-xs text-amber-400">当前网络不是 Polygon，余额与下单都不可用。</p>
+        <p className="text-xs text-warning">当前网络不是 Polygon，余额与下单都不可用。</p>
       </Panel>
     )
   }
@@ -151,7 +151,7 @@ export function WalletPanel() {
         <div className="space-y-2">
           <Row label="签名地址" value={shortAddr(address)} mono />
         </div>
-        <p className="mt-2 text-[10px] leading-snug text-amber-400">
+        <p className="mt-2 text-[10px] leading-snug text-warning">
           这个地址还没在 Polymarket 开户，因此没有代理钱包，无法下单。
           请先到 polymarket.com 用同一个钱包存一次款，代理地址会自动创建。
         </p>
@@ -175,7 +175,7 @@ export function WalletPanel() {
           mono
           hint="代理钱包，钱在这里"
         />
-        <div className="h-px bg-neutral-800" />
+        <div className="h-px bg-border" />
         <Row
           label="USDC.e"
           value={
@@ -197,8 +197,8 @@ export function WalletPanel() {
           mono
         />
       </div>
-      <p className="mt-2 text-[10px] leading-snug text-neutral-500">
-        USDC.e 读的是<span className="text-neutral-400">代理钱包</span>——Polymarket
+      <p className="mt-2 text-[10px] leading-snug text-muted-foreground">
+        USDC.e 读的是<span className="text-foreground">代理钱包</span>——Polymarket
         把资金放在那里，读 EOA 会永远显示 $0。gas 从签名地址出。
       </p>
     </Panel>
@@ -207,8 +207,8 @@ export function WalletPanel() {
 
 export function Panel({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <div className="rounded-lg border border-neutral-800 bg-neutral-900/60 p-3">
-      <p className="mb-2 text-xs font-semibold text-neutral-200">{title}</p>
+    <div className="rounded-lg border border-border bg-card p-3">
+      <p className="mb-2 text-xs font-semibold text-foreground">{title}</p>
       {children}
     </div>
   )
@@ -227,11 +227,11 @@ function Row({
 }) {
   return (
     <div className="flex items-start justify-between gap-2 text-xs">
-      <span className="text-neutral-500" title={hint}>
+      <span className="text-muted-foreground" title={hint}>
         {label}
-        {hint && <span className="ml-1 text-[9px] text-neutral-600">{hint}</span>}
+        {hint && <span className="ml-1 text-[9px] text-muted-foreground/70">{hint}</span>}
       </span>
-      <span className={mono ? 'font-mono text-neutral-200' : 'text-neutral-200'}>{value}</span>
+      <span className={mono ? 'font-mono tnum text-foreground' : 'text-foreground'}>{value}</span>
     </div>
   )
 }
