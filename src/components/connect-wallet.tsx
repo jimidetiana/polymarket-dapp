@@ -1,4 +1,6 @@
+import { useState } from 'react'
 import { useAccount, useConnect, useDisconnect, useSwitchChain, useBalance, useReadContract } from 'wagmi'
+import type { Connector } from 'wagmi'
 import { polygon } from 'wagmi/chains'
 import { formatUnits, erc20Abi } from 'viem'
 import { useQuery } from '@tanstack/react-query'
@@ -35,16 +37,12 @@ export function ConnectWallet() {
   const wrongChain = isConnected && chainId !== polygon.id
 
   if (!isConnected) {
-    const injected = connectors[0]
     return (
-      <button
-        type="button"
-        onClick={() => injected && connect({ connector: injected })}
-        disabled={isPending || !injected}
-        className="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-50"
-      >
-        {isPending ? '连接中…' : !injected ? '未检测到钱包' : '连接钱包'}
-      </button>
+      <WalletPicker
+        connectors={pickable(connectors)}
+        isPending={isPending}
+        onPick={(c) => connect({ connector: c })}
+      />
     )
   }
 
@@ -70,6 +68,108 @@ export function ConnectWallet() {
       >
         断开
       </button>
+    </div>
+  )
+}
+
+/**
+ * 去掉重复的连接器。
+ *
+ * wagmi v3 默认开着 EIP-6963 发现（依赖 mipd），所以 connectors 里同时有：
+ *   1. 各扩展按 6963 广播的自己（带 icon 与 rdns，名字准确）
+ *   2. 我们在 wagmi.ts 里配的那个通用 injected()
+ * 装了币安钱包时，它会以 "Binance Wallet" 出现在第 1 类里 —— 也就是说
+ * **不需要专门的币安连接器**，能连不上只是因为之前 UI 写死了 connectors[0]。
+ *
+ * 通用 injected 会和第 1 类里的某一个指向同一个 window.ethereum，
+ * 列出来就成了两个按钮点下去是同一个钱包。所以：有具体扩展时就丢掉通用的，
+ * 一个都没发现时才留着它当兜底（老扩展不广播 6963，只能靠通用注入）。
+ */
+function pickable(connectors: readonly Connector[]): Connector[] {
+  const discovered = connectors.filter((c) => c.id !== 'injected')
+  return discovered.length > 0 ? [...discovered] : [...connectors]
+}
+
+/**
+ * 钱包选择器。
+ *
+ * 一个钱包时不弹菜单 —— 多一次点击换不来任何信息。两个以上才给列表，
+ * 这也是装了多个扩展时唯一能选中想要的那个的办法。
+ */
+function WalletPicker({
+  connectors,
+  isPending,
+  onPick,
+}: {
+  connectors: Connector[]
+  isPending: boolean
+  onPick: (c: Connector) => void
+}) {
+  const [open, setOpen] = useState(false)
+
+  if (connectors.length === 0) {
+    return (
+      <a
+        href="https://www.binance.com/en/web3wallet"
+        target="_blank"
+        rel="noreferrer"
+        className="rounded-md border border-border px-3 py-1.5 text-xs text-muted-foreground hover:bg-muted hover:text-foreground"
+      >
+        未检测到钱包
+      </a>
+    )
+  }
+
+  if (connectors.length === 1) {
+    return (
+      <button
+        type="button"
+        onClick={() => onPick(connectors[0])}
+        disabled={isPending}
+        className="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-50"
+      >
+        {isPending ? '连接中…' : `连接 ${connectors[0].name}`}
+      </button>
+    )
+  }
+
+  return (
+    <div className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        disabled={isPending}
+        className="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-50"
+      >
+        {isPending ? '连接中…' : '连接钱包'}
+      </button>
+
+      {open && (
+        <>
+          {/* 点外面关掉。放在菜单下层，z 比菜单低 */}
+          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
+          <div className="absolute right-0 z-50 mt-1 w-48 overflow-hidden rounded-lg border border-border bg-popover shadow-2">
+            {connectors.map((c) => (
+              <button
+                key={c.uid}
+                type="button"
+                onClick={() => {
+                  setOpen(false)
+                  onPick(c)
+                }}
+                className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-foreground hover:bg-muted"
+              >
+                {c.icon ? (
+                  <img src={c.icon} alt="" className="size-4 shrink-0 rounded" />
+                ) : (
+                  <span className="size-4 shrink-0 rounded bg-muted" />
+                )}
+                <span className="truncate">{c.name}</span>
+              </button>
+            ))}
+          </div>
+        </>
+      )}
     </div>
   )
 }
