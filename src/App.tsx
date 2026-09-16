@@ -7,7 +7,7 @@
  * 数据链路全在浏览器里：Gamma API → 合并衍生赛事 → buildMarketGraph
  * → resolveTemplate → 画布。没有后端，没有库。
  */
-import { useEffect, useState } from 'react'
+import { Suspense, lazy, useEffect, useState } from 'react'
 import { ConnectWallet, WalletPanel, Panel } from './components/connect-wallet'
 import { MarketGraphCanvas } from './components/market-graph-canvas'
 import { useSoccerMatches, useMarketGraph, TEMPLATE_EDGES } from './lib/use-graph'
@@ -15,7 +15,50 @@ import { PRICE_MODE_LABEL, type PriceMode } from './lib/odds'
 import { translateLeague } from './lib/dict'
 import type { GraphSlot } from './types/market-graph'
 
+/**
+ * 词典维护页面，**只在开发时打包**。
+ *
+ * `import.meta.env.DEV` 是 Vite 的编译期常量：生产构建时它是字面量 false，
+ * 整个分支被摇掉，dict-admin.tsx 及其依赖不会进产物。这不是运行时判断 ——
+ * 运行时判断会把代码打进包里，只是不显示，那等于把维护后台发到线上。
+ *
+ * 用 lazy 而不是静态 import：静态 import 会让打包器无条件把模块拉进依赖图，
+ * DEV 门就白设了。
+ */
+const DictAdmin = import.meta.env.DEV ? lazy(() => import('./pages/dict-admin')) : null
+
+/** 当前 hash 路由。没上 react-router —— 只有两个页面，装路由库不值得 */
+function useHash(): string {
+  const [hash, setHash] = useState(() => window.location.hash)
+  useEffect(() => {
+    const on = () => setHash(window.location.hash)
+    window.addEventListener('hashchange', on)
+    return () => window.removeEventListener('hashchange', on)
+  }, [])
+  return hash
+}
+
 export default function App() {
+  const hash = useHash()
+
+  if (DictAdmin && hash === '#/dict') {
+    return (
+      <Suspense
+        fallback={
+          <div className="flex h-dvh items-center justify-center bg-background text-sm text-muted-foreground">
+            加载中…
+          </div>
+        }
+      >
+        <DictAdmin />
+      </Suspense>
+    )
+  }
+
+  return <GraphPage />
+}
+
+function GraphPage() {
   const { matches, loading, error, network, reload } = useSoccerMatches()
   const [matchId, setMatchId] = useState<string | null>(null)
   const [priceMode, setPriceMode] = useState<PriceMode>('prob')
@@ -72,6 +115,17 @@ export default function App() {
           >
             {PRICE_MODE_LABEL[priceMode]}
           </button>
+
+          {/* 词典入口只在开发时出现。与上面的 lazy 用同一个编译期常量，
+              生产构建里这个 && 分支整体被摇掉，不会留下一个点不开的链接。 */}
+          {import.meta.env.DEV && (
+            <a
+              href="#/dict"
+              className="rounded-md border border-border px-2 py-1 text-[11px] text-muted-foreground hover:bg-muted"
+            >
+              词典
+            </a>
+          )}
 
           <ConnectWallet />
         </div>

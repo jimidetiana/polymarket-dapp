@@ -42,6 +42,7 @@ export const BASE_LEAGUES = stripMeta(leaguesJson as Record<string, string>)
 const LS_TEAMS = 'dict.teams.zh'
 const LS_LEAGUES = 'dict.leagues.zh'
 const LS_ICONS = 'dict.teams.icon'
+const LS_LEAGUE_ICONS = 'dict.leagues.icon'
 
 function readLS(key: string): Record<string, string> {
   try {
@@ -68,19 +69,27 @@ function writeLS(key: string, v: Record<string, string>): void {
 let ovTeams = readLS(LS_TEAMS)
 let ovLeagues = readLS(LS_LEAGUES)
 let ovIcons = readLS(LS_ICONS)
+let ovLeagueIcons = readLS(LS_LEAGUE_ICONS)
 
 export function reloadOverrides(): void {
   ovTeams = readLS(LS_TEAMS)
   ovLeagues = readLS(LS_LEAGUES)
   ovIcons = readLS(LS_ICONS)
+  ovLeagueIcons = readLS(LS_LEAGUE_ICONS)
 }
 
 export function getOverrides(): {
   teams: Record<string, string>
   leagues: Record<string, string>
   icons: Record<string, string>
+  leagueIcons: Record<string, string>
 } {
-  return { teams: { ...ovTeams }, leagues: { ...ovLeagues }, icons: { ...ovIcons } }
+  return {
+    teams: { ...ovTeams },
+    leagues: { ...ovLeagues },
+    icons: { ...ovIcons },
+    leagueIcons: { ...ovLeagueIcons },
+  }
 }
 
 export function setTeamOverride(en: string, zh: string | null): void {
@@ -99,6 +108,19 @@ export function setTeamIcon(en: string, url: string | null): void {
   if (url == null || url.trim() === '') delete ovIcons[en]
   else ovIcons[en] = url.trim()
   writeLS(LS_ICONS, ovIcons)
+}
+
+/**
+ * 联赛图标覆盖。
+ *
+ * 常规情况下不需要 —— Gamma 的 event.image 就是联赛徽标，直接用。
+ * 这里只处理两种例外：某场赛事没带图（实测 857 场里只有 184 场带），
+ * 或者官方那张图不好看/不清楚，想换一张。
+ */
+export function setLeagueIcon(code: string, url: string | null): void {
+  if (url == null || url.trim() === '') delete ovLeagueIcons[code]
+  else ovLeagueIcons[code] = url.trim()
+  writeLS(LS_LEAGUE_ICONS, ovLeagueIcons)
 }
 
 /**
@@ -167,6 +189,20 @@ export function translateTeam(en: string | null | undefined): string {
 export function teamIcon(en: string | null | undefined): string | null {
   if (!en) return null
   return ovIcons[en] ?? null
+}
+
+/**
+ * 联赛图标 URL。覆盖优先，其次用 Gamma 给的那张。
+ *
+ * 参数带 fallback 是因为 Gamma 的图挂在**赛事**上而不是联赛上，
+ * 这个模块拿不到赛事，只能由调用方把 event.image 传进来。
+ */
+export function leagueIcon(
+  code: string | null | undefined,
+  fallback?: string | null,
+): string | null {
+  if (code && ovLeagueIcons[code]) return ovLeagueIcons[code]
+  return fallback ?? null
 }
 
 /**
@@ -311,13 +347,28 @@ export function translateQuestion(
   return text.replace(/\s+/g, ' ').trim()
 }
 
-/** 导出成可直接粘进仓库 JSON 的形状（基准 + 覆盖合并，按键排序） */
-export function exportMerged(): { teams: string; leagues: string; icons: string } {
+/**
+ * 导出成可直接粘进仓库 JSON 的形状（基准 + 覆盖合并，按键排序）。
+ *
+ * 排序是刻意的：JSON 顺序稳定，git diff 才只显示真正改动的那几行，
+ * 否则每次导出都是整文件重排，review 无从下手。
+ */
+export function exportMerged(): {
+  teams: string
+  leagues: string
+  icons: string
+  leagueIcons: string
+} {
   const sortObj = (o: Record<string, string>) =>
-    JSON.stringify(Object.fromEntries(Object.entries(o).sort(([a], [b]) => a.localeCompare(b))), null, 2)
+    JSON.stringify(
+      Object.fromEntries(Object.entries(o).sort(([a], [b]) => a.localeCompare(b))),
+      null,
+      2,
+    )
   return {
     teams: sortObj({ ...BASE_TEAMS, ...ovTeams }),
     leagues: sortObj({ ...BASE_LEAGUES, ...ovLeagues }),
     icons: sortObj(ovIcons),
+    leagueIcons: sortObj(ovLeagueIcons),
   }
 }
