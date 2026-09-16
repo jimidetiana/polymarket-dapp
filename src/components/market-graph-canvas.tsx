@@ -41,6 +41,35 @@ import { formatVolume } from '@/lib/utils'
 import { formatPrice, type PriceMode } from '@/lib/odds'
 import type { GraphGoalCounts, GraphNode, GraphSlot, MarketGraph } from '@/types/market-graph'
 import { VB, chooseFit, contentBox } from '@/lib/fit'
+import {
+  IDENTITY,
+  MIN_K,
+  clientToUser,
+  isZoomed,
+  panBy,
+  transformOf,
+  zoomAt,
+  type View,
+} from '@/lib/viewport'
+
+/** 一格滚轮的缩放倍数。1.15 ≈ 每 5 格翻一倍，手感不至于过冲 */
+const WHEEL_STEP = 1.15
+
+/**
+ * 点一次 +/− 的缩放倍数。
+ *
+ * 比滚轮那一格大：按钮是「有意为之」的操作，一次要看得出变化；
+ * 滚轮会连发很多格，单格必须小。
+ */
+const BUTTON_STEP = 1.5
+
+/**
+ * 超过这个像素位移才算拖动，否则当点击。
+ *
+ * 少了这道判断，节点上极小的抖动会把点击吃掉 —— 触屏上尤其明显，
+ * 手指按下几乎不可能零位移。
+ */
+const DRAG_SLOP_PX = 4
 
 /**
  * 观察容器实际像素尺寸。
@@ -183,28 +212,169 @@ export function MarketGraphCanvas({
   // 适配判据是纯算术，抽到 lib/fit 里跟测试放一起（见 fit.test.ts）
   const { mode: fit, widthPx, heightPx } = chooseFit(size, box)
 
+  const [view, setView] = useState<View>(IDENTITY)
+
+  /**
+   * 换比赛就复位视图。
+   *
+   * 不复位的话，上一场放大后的位置会套到新一场上 —— 两场的槽位分布不同，
+   * 看到的会是一片空白，用户不知道图去哪了。
+   */
+  useEffect(() => {
+    setView(IDENTITY)
+  }, [graph.nodes])
+
+  /** 容器内相对坐标。事件给的是页面坐标，必须减掉容器位置 */
+  const localPoint = (e: { clientX: number; clientY: number }) => {
+    const r = wrapRef.current?.getBoundingClientRect()
+    return r ? { px: e.clientX - r.left, py: e.clientY - r.top } : { px: 0, py: 0 }
+  }
+
+  /**
+   * 滚轮缩放。
+   *
+   * 用 passive:false 的原生监听而不是 React 的 onWheel：React 挂的是 passive
+   * 监听，preventDefault 会被浏览器忽略，页面照样滚。而这里必须拦 ——
+   * 不拦的话在画布上滚轮会同时缩放和滚页面。
+   *
+   * 基础适配（k=1）时不拦：那时整图已看全，把滚轮让给页面更符合预期。
+   */
+  useEffect(() => {
+    const el = wrapRef.current
+    if (!el) return
+    const onWheel = (e: WheelEvent) => {
+      // 未缩放且是向外滚（缩小方向）时不接管，留给页面
+      if (!isZoomed(view) && e.deltaY > 0) return
+      e.preventDefault()
+      const { px, py } = localPoint(e)
+      const u = clientToUser(px, py, size, box, view)
+      setView((v) => zoomAt(v, u, e.deltaY < 0 ? WHEEL_STEP : 1 / WHEEL_STEP, box))
+    }
+    el.addEventListener('wheel', onWheel, { passive: false })
+    return () => el.removeEventListener('wheel', onWheel)
+  }, [view, size, box, wrapRef])
+
+  /**
+   * 指针拖动与双指捏合，用 Pointer Events 统一处理鼠标和触摸。
+   *
+   * 记在 ref 里而不是 state：拖动过程每帧都在变，用 state 会触发额外渲染，
+   * 而这些中间值只有下一次事件用得到。
+   */
+  const drag = useRef<{
+    pointers: Map<number, { x: number; y: number }>
+    moved: number
+    /** 双指起始间距与中点（用户坐标），捏合时用 */
+    pinch: { dist: number; u: { x: number; y: number }; k: number } | null
+  }>({ pointers: new Map(), moved: 0, pinch: null })
+
+  const onPointerDown = (e: React.PointerEvent) => {
+    const { px, py } = localPoint(e)
+    const d = drag.current
+    d.pointers.set(e.pointerId, { x: px, y: py })
+    d.moved = 0
+    if (d.pointers.size === 2) {
+      const [a, b] = [...d.pointers.values()]
+      const mid = { px: (a.x + b.x) / 2, py: (a.y + b.y) / 2 }
+      d.pinch = {
+        dist: Math.hypot(a.x - b.x, a.y - b.y),
+        u: clientToUser(mid.px, mid.py, size, box, view),
+        k: view.k,
+      }
+    }
+    // 捕获指针，拖到画布外也能继续收到事件
+    ;(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId)
+  }
+
+  const onPointerMove = (e: React.PointerEvent) => {
+    const d = drag.current
+    const prev = d.pointers.get(e.pointerId)
+    if (!prev) return
+    const { px, py } = localPoint(e)
+    d.pointers.set(e.pointerId, { x: px, y: py })
+
+    if (d.pointers.size >= 2 && d.pinch) {
+      const [a, b] = [...d.pointers.values()]
+      const dist = Math.hypot(a.x - b.x, a.y - b.y)
+      if (d.pinch.dist > 0) {
+        // 相对起始间距算目标倍数，而不是逐帧累乘 —— 累乘会积累误差，
+        // 手指回到原位时缩放回不到原值。
+        const target = (d.pinch.k * dist) / d.pinch.dist
+        setView((v) => zoomAt({ ...v, k: v.k }, d.pinch!.u, target / v.k, box))
+      }
+      d.moved = Infinity // 捏合过就不算点击
+      return
+    }
+
+    const dx = px - prev.x
+    const dy = py - prev.y
+    d.moved += Math.hypot(dx, dy)
+    // 只有放大后才允许拖：k=1 时 clampView 会把平移夹回 0，拖动是无效动作，
+    // 此时保持默认行为（让容器/页面自己滚）更合理。
+    if (view.k > MIN_K + 1e-6) setView((v) => panBy(v, dx, dy, size, box))
+  }
+
+  const endPointer = (e: React.PointerEvent) => {
+    const d = drag.current
+    d.pointers.delete(e.pointerId)
+    if (d.pointers.size < 2) d.pinch = null
+  }
+
+  /** 刚拖过就不要把 pointerup 当成点击 */
+  const wasDrag = () => drag.current.moved > DRAG_SLOP_PX
+
+  /**
+   * +/− 按钮：以容器中心为锚缩放。
+   *
+   * 用中心而不是原点 —— 按钮缩放时用户正看着画面中间，绕原点会让当前
+   * 关注的区域跑出视野。与滚轮/捏合共用 zoomAt，锚点换成中心即可。
+   */
+  const zoomAtCenter = (factor: number) => {
+    const u = clientToUser(size.w / 2, size.h / 2, size, box, view)
+    setView((v) => zoomAt(v, u, factor, box))
+  }
+
+  const zoomed = isZoomed(view)
+
   return (
     <div
       ref={wrapRef}
       className={cn(
-        'relative h-full w-full overflow-auto',
+        'relative h-full w-full',
+        // 放大后自己接管平移，交给浏览器滚动会和手势打架
+        zoomed ? 'overflow-hidden' : 'overflow-auto',
         // width 模式下图比容器窄时居中，免得贴在左边
-        fit === 'width' && 'flex justify-center',
+        fit === 'width' && !zoomed && 'flex justify-center',
       )}
+      // 关掉浏览器默认的触摸手势（下拉刷新、双指缩放整页），
+      // 否则手机上捏合会缩放整个页面而不是画布
+      style={{ touchAction: zoomed ? 'none' : 'pan-y' }}
+      onPointerDown={onPointerDown}
+      onPointerMove={onPointerMove}
+      onPointerUp={endPointer}
+      onPointerCancel={endPointer}
     >
       <svg
         // 用内容包围盒而不是设计稿全幅：模板四周本来就有空白，
         // 按全幅缩放等于把空白也一起缩进去，屏幕越宽浪费越明显。
         viewBox={`${box.x} ${box.y} ${box.w} ${box.h}`}
         preserveAspectRatio="xMidYMid meet"
-        className={cn('shrink-0', fit === 'contain' ? 'h-full w-full' : 'w-full')}
+        className={cn(
+          'shrink-0',
+          fit === 'contain' || zoomed ? 'h-full w-full' : 'w-full',
+          zoomed && 'cursor-grab',
+        )}
         style={
-          fit === 'width' && widthPx > 0 ? { width: widthPx, height: heightPx } : undefined
+          fit === 'width' && !zoomed && widthPx > 0
+            ? { width: widthPx, height: heightPx }
+            : undefined
         }
         onClick={(e) => {
+          if (wasDrag()) return
           if (e.target === e.currentTarget) onSelect(null)
         }}
       >
+        {/* 缩放平移只作用在这一层：viewBox 固定，留边只在 baseScale 里算一次 */}
+        <g transform={transformOf(view)}>
         {/* 连线压在节点下面 */}
         <g>
           {templateEdges.map(([a, b]) => {
@@ -261,6 +431,9 @@ export function MarketGraphCanvas({
                 style={{ cursor: empty ? 'default' : 'pointer' }}
                 onClick={(ev) => {
                   ev.stopPropagation()
+                  // 拖动结束时浏览器也会派发 click。少了这道判断，
+                  // 在节点上平移会误触发下单 —— 触屏上几乎必然发生。
+                  if (wasDrag()) return
                   if (empty) return
                   // 绑了盘口的节点点进去直接开下单界面。中心三个推断节点没有
                   // 盘口，只做聚焦高亮。
@@ -411,7 +584,41 @@ export function MarketGraphCanvas({
             )
           })}
         </g>
+        </g>
       </svg>
+
+      {/*
+        缩放控件。放在容器里而不是 SVG 里：SVG 内的按钮会跟内容一起缩放和平移，
+        放大后自己就跑出画面了 —— 而那正是最需要「复位」的时候。
+      */}
+      <div className="pointer-events-auto absolute bottom-3 right-3 z-40 flex flex-col gap-1">
+        <button
+          type="button"
+          aria-label="放大"
+          onClick={() => zoomAtCenter(BUTTON_STEP)}
+          className="h-8 w-8 rounded-md border border-border bg-popover/90 text-sm text-foreground/80 hover:bg-muted"
+        >
+          +
+        </button>
+        <button
+          type="button"
+          aria-label="缩小"
+          onClick={() => zoomAtCenter(1 / BUTTON_STEP)}
+          className="h-8 w-8 rounded-md border border-border bg-popover/90 text-sm text-foreground/80 hover:bg-muted"
+        >
+          −
+        </button>
+        {zoomed && (
+          <button
+            type="button"
+            aria-label="复位"
+            onClick={() => setView(IDENTITY)}
+            className="h-8 w-8 rounded-md border border-primary/60 bg-popover/90 text-[10px] text-primary hover:bg-muted"
+          >
+            复位
+          </button>
+        )}
+      </div>
 
       {hover && (
         <SlotTooltip

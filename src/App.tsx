@@ -30,14 +30,18 @@ export default function App() {
   const { graph, slots, goals, prevPrices } = useMarketGraph(match)
 
   return (
-    // h-screen + flex 列，而不是 min-h-screen：画布要用 ResizeObserver 量到
-    // 一个**确定的**高度才能算缩放。min-h-* 下的百分比高度解析成 auto，
-    // 子元素的 h-full 会量到 0，contain 模式就永远算不出来。
-    <div className="flex h-screen flex-col bg-background text-foreground">
-      <header className="flex shrink-0 items-center justify-between gap-3 border-b border-border px-4 py-2.5">
+    // h-dvh + flex 列，而不是 min-h-screen：
+    //  1. 画布要用 ResizeObserver 量到一个**确定的**高度才能算缩放。
+    //     min-h-* 下的百分比高度解析成 auto，子元素的 h-full 会量到 0，
+    //     contain 模式就永远算不出来。
+    //  2. dvh 而不是 vh：手机浏览器的 100vh 不含地址栏，用 vh 会让底部
+    //     被地址栏切掉一截，而被切掉的正好是侧栏面板。
+    <div className="flex h-dvh flex-col bg-background text-foreground">
+      <header className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-border px-3 py-2 sm:px-4 sm:py-2.5">
         <div className="min-w-0">
           <h1 className="text-sm font-semibold">盘口网状图</h1>
-          <p className="text-[11px] text-muted-foreground">
+          {/* 副标题在窄屏藏掉：它是说明性文字，让位给比赛下拉和钱包按钮 */}
+          <p className="hidden text-[11px] text-muted-foreground sm:block">
             结构关系与实时价格叠在一张图上，点节点直接下单
           </p>
         </div>
@@ -50,7 +54,7 @@ export default function App() {
               setSelectedKey(null)
               setPicked(null)
             }}
-            className="max-w-[420px] truncate rounded-md border border-border bg-input px-2 py-1 text-xs text-foreground"
+            className="max-w-[150px] truncate rounded-md border border-border bg-input px-2 py-1 text-xs text-foreground sm:max-w-[420px]"
           >
             {matches.length === 0 && <option value="">（无比赛）</option>}
             {matches.map((m) => (
@@ -75,9 +79,17 @@ export default function App() {
       {/* flex-1 + min-h-0：撑满 header 以下的高度，且允许子元素比内容矮。
           少了 min-h-0，flex 子项的默认 min-height:auto 会被内容顶高，
           高度重新变成不确定的，画布又量不到数。 */}
-      <main className="flex min-h-0 flex-1 gap-3 p-3">
-        {/* 左：关系图 */}
-        <section className="flex min-h-0 min-w-0 flex-1 rounded-lg border border-border bg-card">
+      {/*
+        窄屏纵向堆叠、宽屏左右分栏。断点取 lg（1024px）而不是 sm：
+        侧栏 288px + 画布至少要 ~600px 才画得开，两者相加已经接近 900px，
+        在 sm/md 就分栏会把画布挤到比手机还窄。
+
+        纵向堆叠时画布固定占 60dvh：画布必须拿到一个**确定的**高度才能算缩放，
+        用 flex-1 在可滚动的纵向容器里会退化成内容高度（也就是 0）。
+      */}
+      <main className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-3 lg:flex-row lg:overflow-hidden">
+        {/* 关系图 */}
+        <section className="flex h-[60dvh] min-h-0 min-w-0 shrink-0 rounded-lg border border-border bg-card lg:h-auto lg:flex-1 lg:shrink">
           {loading ? (
             <Centered>正在拉取比赛…</Centered>
           ) : error && matches.length === 0 ? (
@@ -117,7 +129,8 @@ export default function App() {
         {/* 右：比赛信息 + 钱包 + 订单 */}
         {/* 侧栏自己滚：窄窗口下三块面板会超过视口高度，
             让它独立滚动，不牵连画布的高度计算 */}
-        <aside className="flex w-72 shrink-0 flex-col gap-3 overflow-y-auto">
+        {/* 窄屏时占满宽度并跟着 main 一起滚；宽屏时固定 288px 自己滚 */}
+        <aside className="flex w-full shrink-0 flex-col gap-3 lg:w-72 lg:overflow-y-auto">
           {match && graph && (
             <Panel title="本场">
               <div className="space-y-1.5 text-xs">
