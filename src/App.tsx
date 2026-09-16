@@ -30,8 +30,11 @@ export default function App() {
   const { graph, slots, goals, prevPrices } = useMarketGraph(match)
 
   return (
-    <div className="min-h-screen bg-background text-foreground">
-      <header className="flex items-center justify-between gap-3 border-b border-border px-4 py-2.5">
+    // h-screen + flex 列，而不是 min-h-screen：画布要用 ResizeObserver 量到
+    // 一个**确定的**高度才能算缩放。min-h-* 下的百分比高度解析成 auto，
+    // 子元素的 h-full 会量到 0，contain 模式就永远算不出来。
+    <div className="flex h-screen flex-col bg-background text-foreground">
+      <header className="flex shrink-0 items-center justify-between gap-3 border-b border-border px-4 py-2.5">
         <div className="min-w-0">
           <h1 className="text-sm font-semibold">盘口网状图</h1>
           <p className="text-[11px] text-muted-foreground">
@@ -69,9 +72,12 @@ export default function App() {
         </div>
       </header>
 
-      <main className="flex gap-3 p-3">
+      {/* flex-1 + min-h-0：撑满 header 以下的高度，且允许子元素比内容矮。
+          少了 min-h-0，flex 子项的默认 min-height:auto 会被内容顶高，
+          高度重新变成不确定的，画布又量不到数。 */}
+      <main className="flex min-h-0 flex-1 gap-3 p-3">
         {/* 左：关系图 */}
-        <section className="min-h-[70vh] min-w-0 flex-1 overflow-auto rounded-lg border border-border bg-card">
+        <section className="flex min-h-0 min-w-0 flex-1 rounded-lg border border-border bg-card">
           {loading ? (
             <Centered>正在拉取比赛…</Centered>
           ) : error && matches.length === 0 ? (
@@ -109,7 +115,9 @@ export default function App() {
         </section>
 
         {/* 右：比赛信息 + 钱包 + 订单 */}
-        <aside className="flex w-72 shrink-0 flex-col gap-3">
+        {/* 侧栏自己滚：窄窗口下三块面板会超过视口高度，
+            让它独立滚动，不牵连画布的高度计算 */}
+        <aside className="flex w-72 shrink-0 flex-col gap-3 overflow-y-auto">
           {match && graph && (
             <Panel title="本场">
               <div className="space-y-1.5 text-xs">
@@ -154,7 +162,8 @@ export default function App() {
 
 function Centered({ children }: { children: React.ReactNode }) {
   return (
-    <div className="flex h-full min-h-[70vh] flex-col items-center justify-center gap-2 text-sm text-muted-foreground">
+    // 不写 min-h-[70vh]：那会把 section 顶出确定高度，破坏画布的尺寸测量
+    <div className="flex h-full w-full flex-col items-center justify-center gap-2 p-6 text-sm text-muted-foreground">
       {children}
     </div>
   )

@@ -35,14 +35,36 @@
  * best ask）、右「买」（你卖出能收的价，best bid）。两个数字并排，点差
  * 有多宽一眼就看出来。缺哪一侧就显示「—」，不用另一侧顶替。
  */
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { cn } from '@/lib/utils'
 import { formatVolume } from '@/lib/utils'
 import { formatPrice, type PriceMode } from '@/lib/odds'
 import type { GraphGoalCounts, GraphNode, GraphSlot, MarketGraph } from '@/types/market-graph'
+import { VB, chooseFit, contentBox } from '@/lib/fit'
 
-/** 设计稿画布，节点半径 76 */
-const VB = { width: 1334, height: 1775, r: 76 }
+/**
+ * 观察容器实际像素尺寸。
+ *
+ * 自适应必须拿真实尺寸算，不能靠 CSS 百分比：SVG 要按容器宽高比在
+ * 「贴宽」和「贴高」之间选，这个判断只有拿到数字才能做。
+ * 用 ResizeObserver 而不是 window resize —— 侧栏展开、面板增减都会改变
+ * 容器宽度，而窗口尺寸没变，监听 window 收不到。
+ */
+function useElementSize<T extends HTMLElement>() {
+  const ref = useRef<T | null>(null)
+  const [size, setSize] = useState({ w: 0, h: 0 })
+  useEffect(() => {
+    const el = ref.current
+    if (!el) return
+    const ro = new ResizeObserver((entries) => {
+      const r = entries[0]?.contentRect
+      if (r) setSize({ w: r.width, h: r.height })
+    })
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [])
+  return [ref, size] as const
+}
 
 /** 盘口节点：设计稿的蓝，为深色底压暗一档。DIM = 只有快照价 */
 const BLUE = '#2b8fc9'
@@ -155,12 +177,30 @@ export function MarketGraphCanvas({
     return m
   }, [graph.nodes])
 
+  const [wrapRef, size] = useElementSize<HTMLDivElement>()
+  const box = useMemo(() => contentBox(slots), [slots])
+
+  // 适配判据是纯算术，抽到 lib/fit 里跟测试放一起（见 fit.test.ts）
+  const { mode: fit, widthPx, heightPx } = chooseFit(size, box)
+
   return (
-    <div className="relative h-full w-full overflow-auto">
+    <div
+      ref={wrapRef}
+      className={cn(
+        'relative h-full w-full overflow-auto',
+        // width 模式下图比容器窄时居中，免得贴在左边
+        fit === 'width' && 'flex justify-center',
+      )}
+    >
       <svg
-        viewBox={`0 0 ${VB.width} ${VB.height}`}
+        // 用内容包围盒而不是设计稿全幅：模板四周本来就有空白，
+        // 按全幅缩放等于把空白也一起缩进去，屏幕越宽浪费越明显。
+        viewBox={`${box.x} ${box.y} ${box.w} ${box.h}`}
         preserveAspectRatio="xMidYMid meet"
-        className="h-full w-full"
+        className={cn('shrink-0', fit === 'contain' ? 'h-full w-full' : 'w-full')}
+        style={
+          fit === 'width' && widthPx > 0 ? { width: widthPx, height: heightPx } : undefined
+        }
         onClick={(e) => {
           if (e.target === e.currentTarget) onSelect(null)
         }}
