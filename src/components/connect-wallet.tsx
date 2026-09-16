@@ -1,6 +1,8 @@
 import { useAccount, useConnect, useDisconnect, useSwitchChain, useBalance, useReadContract } from 'wagmi'
 import { polygon } from 'wagmi/chains'
 import { formatUnits, erc20Abi } from 'viem'
+import { useQuery } from '@tanstack/react-query'
+import { lookupProxyWallet, USDC_E_POLYGON } from '../lib/proxy-wallet'
 
 /** 地址缩写。0x1234...abcd */
 export function shortAddr(a?: string): string {
@@ -73,18 +75,6 @@ export function ConnectWallet() {
 }
 
 /**
- * 钱包信息块（三块之一）。
- *
- * 这里显示的是**链上真实余额**，不是内部记账。原项目有一套自己的余额账本
- * （wallet 表 + 模拟出入金），dapp 不需要 —— 用户的钱在自己钱包里，
- * 余额就该直接读链。
- *
- * 注意 Polymarket 用的是 USDC.e（bridged），不是原生 USDC。
- * 地址写死在这里而不是配置：读错代币会显示 0 余额，看起来像没充钱。
- */
-const USDC_E_POLYGON = '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174' as const
-
-/**
  * 从 bigint 原始值格式化余额。
  *
  * wagmi v3 的 useBalance 不再返回 `formatted`，只给 `value: bigint` ——
@@ -98,23 +88,43 @@ function fmtUnits(v: bigint | undefined, decimals: number, dp: number): string {
   return Number.isFinite(n) ? n.toFixed(dp) : s
 }
 
+/**
+ * 钱包信息块（三块之一）。
+ *
+ * ## 关键：余额要读**代理钱包**，不是 EOA
+ *
+ * Polymarket 把用户资金放在一个代理合约里，EOA 只负责签名。
+ * 直接读 EOA 的 USDC.e 会显示 $0 —— 即使账户里有钱。实测就踩到了。
+ * 详见 lib/proxy-wallet.ts。
+ *
+ * 所以这里显示两个地址：EOA（签名用）与代理（资金所在）。
+ * 让人一眼看出钱在哪，而不是对着一个 0 猜。
+ */
 export function WalletPanel() {
   const { address, isConnected, chainId } = useAccount()
   const onPolygon = chainId === polygon.id
   const enabled = isConnected && onPolygon
 
-  // 原生代币（POL）用 useBalance
+  // 代理地址只能问 Polymarket，不能本地推导（CREATE2 salt 规则不公开）
+  const proxy = useQuery({
+    queryKey: ['proxy-wallet', address],
+    queryFn: () => lookupProxyWallet(address as string),
+    enabled: enabled && !!address,
+    staleTime: 10 * 60 * 1000, // 代理地址不会变，缓存久一点
+  })
+  const proxyAddr = proxy.data?.status === 'ok' ? proxy.data.proxyWallet : undefined
+
+  // gas 费从 EOA 出，所以 POL 读 EOA
   const native = useBalance({ address, query: { enabled } })
 
-  // ERC20 余额：wagmi v3 的 useBalance 去掉了 token 参数，改用 useReadContract。
-  // Polymarket 用 USDC.e（bridged），不是原生 USDC —— 读错代币会显示 0，
-  // 看起来像没充钱。
+  // 交易资金在代理地址上，所以 USDC.e 读代理。
+  // wagmi v3 的 useBalance 去掉了 token 参数，ERC20 改用 useReadContract。
   const usdc = useReadContract({
     address: USDC_E_POLYGON,
     abi: erc20Abi,
     functionName: 'balanceOf',
-    args: address ? [address] : undefined,
-    query: { enabled: enabled && !!address },
+    args: proxyAddr ? [proxyAddr] : undefined,
+    query: { enabled: enabled && !!proxyAddr },
   })
 
   if (!isConnected) {
@@ -133,13 +143,48 @@ export function WalletPanel() {
     )
   }
 
+  // 没在 Polymarket 开过户 = 没有代理地址 = 无法交易。
+  // 必须说清楚，否则用户看到 $0 会以为是余额问题或程序坏了。
+  if (proxy.data?.status === 'no-account') {
+    return (
+      <Panel title="钱包">
+        <div className="space-y-2">
+          <Row label="签名地址" value={shortAddr(address)} mono />
+        </div>
+        <p className="mt-2 text-[10px] leading-snug text-amber-400">
+          这个地址还没在 Polymarket 开户，因此没有代理钱包，无法下单。
+          请先到 polymarket.com 用同一个钱包存一次款，代理地址会自动创建。
+        </p>
+      </Panel>
+    )
+  }
+
   return (
     <Panel title="钱包">
       <div className="space-y-2">
-        <Row label="地址" value={shortAddr(address)} mono />
+        <Row label="签名地址" value={shortAddr(address)} mono hint="EOA，只负责签名" />
+        <Row
+          label="资金地址"
+          value={
+            proxy.isLoading
+              ? '查询中…'
+              : proxy.data?.status === 'error'
+                ? '查询失败'
+                : shortAddr(proxyAddr)
+          }
+          mono
+          hint="代理钱包，钱在这里"
+        />
+        <div className="h-px bg-neutral-800" />
         <Row
           label="USDC.e"
-          value={usdc.isLoading ? '读取中…' : `$${fmtUnits(usdc.data, 6, 2)}`}
+          value={
+            proxy.isLoading || usdc.isLoading
+              ? '读取中…'
+              : proxyAddr
+                ? `$${fmtUnits(usdc.data, 6, 2)}`
+                : '—'
+          }
           mono
         />
         <Row
@@ -153,7 +198,8 @@ export function WalletPanel() {
         />
       </div>
       <p className="mt-2 text-[10px] leading-snug text-neutral-500">
-        余额直接读链，不是内部记账。下单需要 USDC.e 授权额度，首次会多一次签名。
+        USDC.e 读的是<span className="text-neutral-400">代理钱包</span>——Polymarket
+        把资金放在那里，读 EOA 会永远显示 $0。gas 从签名地址出。
       </p>
     </Panel>
   )
@@ -168,10 +214,23 @@ export function Panel({ title, children }: { title: string; children: React.Reac
   )
 }
 
-function Row({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
+function Row({
+  label,
+  value,
+  mono,
+  hint,
+}: {
+  label: string
+  value: string
+  mono?: boolean
+  hint?: string
+}) {
   return (
-    <div className="flex items-center justify-between gap-2 text-xs">
-      <span className="text-neutral-500">{label}</span>
+    <div className="flex items-start justify-between gap-2 text-xs">
+      <span className="text-neutral-500" title={hint}>
+        {label}
+        {hint && <span className="ml-1 text-[9px] text-neutral-600">{hint}</span>}
+      </span>
       <span className={mono ? 'font-mono text-neutral-200' : 'text-neutral-200'}>{value}</span>
     </div>
   )
