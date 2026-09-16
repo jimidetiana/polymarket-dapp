@@ -4,7 +4,9 @@
     "target": "es2023",
     "lib": ["ES2023", "DOM"],
     "module": "esnext",
-    "types": ["vite/client"],
+    // 加 node：搬过来的 graph 测试用 node:assert/strict 断言（vitest 跑在 Node 上，
+    // 直接可用），不加的话这几个 import 在 tsc 下报 TS2591。
+    "types": ["vite/client", "node"],
     "allowArbitraryExtensions": true,
     "skipLibCheck": true,
 
