@@ -19,6 +19,7 @@ import {
 import { buildMarketGraph, type GraphEventInput } from '../graph/graph'
 import { resolveTemplate, TEMPLATE_EDGES } from '../graph/template'
 import { inferGoalCounts, matchMinute, type GoalCounts } from '../graph/goals'
+import { translateLeague, translateQuestion, translateTeam } from './dict'
 import type { MarketGraph } from '../graph/types'
 import type { ResolvedSlot } from '../graph/template'
 
@@ -92,16 +93,33 @@ export function useMarketGraph(match: SoccerMatch | null): GraphState {
 
   const graph = useMemo(() => {
     if (!match) return null
+    // 队名中文化在这里注入，而不是在 gamma.ts 里改 match.home/away：
+    // 那两个字段要保持英文原名 —— 让球方向判断、盘口问句替换、词典查表
+    // 都以英文名为键，翻过就对不上了。
+    const homeZh = translateTeam(match.home)
+    const awayZh = translateTeam(match.away)
     const event: GraphEventInput = {
       id: match.id,
       titleEn: match.title,
-      titleZh: null,
+      titleZh: `${homeZh} vs ${awayZh}`,
       homeTeamEn: match.home,
       awayTeamEn: match.away,
-      league: match.league,
+      // translateTeam 查不到会原样返回英文，此时不传 zh —— parse.ts 里
+      // `homeTeamZh || homeTeamEn` 的回落逻辑本来就对，传个等于英文的值
+      // 只会让「有没有译名」这件事看不出来。
+      homeTeamZh: homeZh === match.home ? null : homeZh,
+      awayTeamZh: awayZh === match.away ? null : awayZh,
+      league: translateLeague(match.leagueCode),
       endTime: match.endDate,
     }
-    const markets = match.markets.map(toGraphMarketInput)
+    // 盘口问句也过一遍翻译：toGraphMarketInput 里 questionZh 写死 null，
+    // 因为那个函数拿不到队名。队名只有在这一层才知道，所以在这里补。
+    // 翻不动（译名缺失 + 术语没命中）就留 null，让 tooltip 回落英文原句。
+    const markets = match.markets.map((m) => {
+      const base = toGraphMarketInput(m)
+      const zh = translateQuestion(base.questionEn, match.home, match.away)
+      return { ...base, questionZh: zh && zh !== base.questionEn ? zh : null }
+    })
     const minute = matchMinute(match.endDate)
     return buildMarketGraph(event, markets, {
       minVolume: 0,

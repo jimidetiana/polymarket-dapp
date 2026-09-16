@@ -17,6 +17,8 @@
  * 拿到的是**当刻快照** —— 回放和历史暂时没有，这是「无后端」的取舍。
  */
 
+import { leagueCodeFromImage } from './dict'
+
 const GAMMA_BASE = 'https://gamma-api.polymarket.com'
 
 /** Gamma 的 tag_id=1 是体育大类，再按 tags.slug 筛出足球 */
@@ -53,6 +55,16 @@ export type GammaEvent = {
   markets?: GammaMarket[]
   volume?: string | number
   liquidity?: string | number
+  /**
+   * 赛事图。对足球对阵盘来说这是**联赛徽标**
+   * （.../soccer-leagues/<code>.png），不是球队图——实测同一赛事下
+   * 所有盘口的 image 去重后只有 1 种，它不区分球队。
+   *
+   * 联赛代码就从这个路径反解，比 tag 可靠得多：857 场里 soccer-* tag
+   * 命中 0 次，图片路径命中 184 次。
+   */
+  image?: string
+  icon?: string
 }
 
 /**
@@ -151,7 +163,14 @@ export type SoccerMatch = {
   title: string
   home: string
   away: string
-  league: string | null
+  /**
+   * 联赛代码，如 col1 / enl。从 event.image 路径反解 —— tag 里几乎拿不到
+   * （实测 857 场 soccer-* tag 命中 0 次，图片路径命中 184 次）。
+   * 中文名由 lib/dict 的 translateLeague 查，不在这里翻。
+   */
+  leagueCode: string | null
+  /** 联赛徽标 URL。Gamma 直接给，不用自己存 */
+  leagueIcon: string | null
   endDate: string | null
   /** 合并后的全部盘口 */
   markets: GammaMarket[]
@@ -218,15 +237,27 @@ export function mergeIntoMatches(events: GammaEvent[]): SoccerMatch[] {
       }
     }
 
-    const league =
-      (primary.tags ?? []).find((t) => (t.slug ?? '').startsWith('soccer-'))?.label ?? null
+    // 联赛代码从图片路径反解，且**在整组里找**而不是只看主赛事：
+    // 衍生赛事（- Exact Score 之类）常常有联赛徽标而主赛事没有。
+    let leagueIcon: string | null = null
+    let leagueCode: string | null = null
+    for (const e of list) {
+      const url = e.image ?? e.icon ?? null
+      const code = leagueCodeFromImage(url)
+      if (code) {
+        leagueCode = code
+        leagueIcon = url
+        break
+      }
+    }
 
     out.push({
       id: String(primary.id),
       title: base,
       home: teams.home,
       away: teams.away,
-      league,
+      leagueCode,
+      leagueIcon,
       endDate: primary.endDate ?? null,
       markets,
       sources: list.map((e) => e.title ?? '').filter(Boolean),

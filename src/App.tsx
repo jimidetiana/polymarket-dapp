@@ -12,6 +12,7 @@ import { ConnectWallet, WalletPanel, Panel } from './components/connect-wallet'
 import { MarketGraphCanvas } from './components/market-graph-canvas'
 import { useSoccerMatches, useMarketGraph, TEMPLATE_EDGES } from './lib/use-graph'
 import { PRICE_MODE_LABEL, type PriceMode } from './lib/odds'
+import { translateLeague } from './lib/dict'
 import type { GraphSlot } from './types/market-graph'
 
 export default function App() {
@@ -134,7 +135,7 @@ export default function App() {
           {match && graph && (
             <Panel title="本场">
               <div className="space-y-1.5 text-xs">
-                <KV k="联赛" v={match.league ?? '—'} />
+                <LeagueRow code={match.leagueCode} icon={match.leagueIcon} />
                 <KV k="盘口" v={`${match.markets.length}（${match.sources.length} 个子赛事）`} />
                 <KV k="节点 / 边" v={`${graph.nodes.length} / ${graph.edges.length}`} />
                 <KV k="划分组" v={String(graph.groups.length)} />
@@ -187,6 +188,40 @@ function KV({ k, v }: { k: string; v: string }) {
     <div className="flex items-baseline justify-between gap-2">
       <span className="shrink-0 text-muted-foreground">{k}</span>
       <span className="truncate text-right font-mono text-foreground">{v}</span>
+    </div>
+  )
+}
+
+/**
+ * 联赛一行：徽标 + 中文名。
+ *
+ * 徽标用 Gamma 给的 URL（event.image 指向 soccer-leagues/<code>.png），
+ * 不自己存 —— 那是唯一免费可靠的图标来源。
+ *
+ * 代码查不到译名时显示「未知联赛」而不是显示代码本身：`col1` 对用户没有
+ * 任何意义，而缺哪些代码由管理页面的缺失列表负责暴露。
+ */
+function LeagueRow({ code, icon }: { code: string | null; icon: string | null }) {
+  const zh = translateLeague(code)
+  return (
+    <div className="flex items-baseline justify-between gap-2">
+      <span className="shrink-0 text-muted-foreground">联赛</span>
+      <span className="flex min-w-0 items-center gap-1.5">
+        {icon && (
+          <img
+            src={icon}
+            alt=""
+            className="size-4 shrink-0 rounded-sm object-contain"
+            // 图挂了就藏掉，不要显示破图占位符
+            onError={(e) => {
+              e.currentTarget.style.display = 'none'
+            }}
+          />
+        )}
+        <span className="truncate text-right text-foreground">
+          {zh ?? (code ? '未知联赛' : '—')}
+        </span>
+      </span>
     </div>
   )
 }
