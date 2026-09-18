@@ -18,9 +18,10 @@ dist-ssr
 .env.*
 !.env.example
 
-# Claude Code 的 worktree 是本地工作副本，不该进版本库。
-# 只挡 worktrees —— settings.json 之类的项目配置仍可提交。
+# Claude Code 的本地文件：worktree 是工作副本，settings.json 是本机权限配置，
+# 两者都属于个人环境，不该进版本库。
 .claude/worktrees/
+.claude/settings.json
 
 # Editor directories and files
 .vscode/*
