@@ -7,13 +7,32 @@
  * 数据链路全在浏览器里：Gamma API → 合并衍生赛事 → buildMarketGraph
  * → resolveTemplate → 画布。没有后端，没有库。
  */
-import { Suspense, lazy, useEffect, useState } from 'react'
+import { Suspense, lazy, useEffect, useMemo, useState } from 'react'
 import { ConnectWallet, WalletPanel, Panel } from './components/connect-wallet'
 import { MarketGraphCanvas } from './components/market-graph-canvas'
+import { MatchPicker } from './components/match-picker'
+/**
+ * 下单弹窗按需加载。
+ *
+ * 它牵进 @polymarket/client（1929 个模块里的大头），静态 import 会把这整块
+ * 打进首屏包。而「打开页面看一眼图」和「下单」是两件事 —— 第一眼不该为
+ * 后者付 300 kB gzip 的代价。
+ *
+ * 用 lazy 而不是静态 import：静态 import 会让打包器无条件把模块拉进依赖图，
+ * 与 DictAdmin 那里是同一个理由。
+ *
+ * 注意它是 `.then(m => ({ default: m.OrderDialog }))` 而不是直接 lazy(import(...))：
+ * 那个模块是**具名导出**，React.lazy 只认 default。
+ */
+const OrderDialog = lazy(() =>
+  import('./components/order-dialog').then((m) => ({ default: m.OrderDialog })),
+)
 import { useSoccerMatches, useMarketGraph, TEMPLATE_EDGES } from './lib/use-graph'
 import { PRICE_MODE_LABEL, type PriceMode } from './lib/odds'
 import { translateLeague } from './lib/dict'
-import type { GraphSlot } from './types/market-graph'
+import { formatTickPrice, DEFAULT_TICK } from './lib/tick'
+import { cn } from './lib/utils'
+import type { ConnState } from './lib/clob-ws'
 
 /**
  * 词典维护页面，**只在开发时打包**。
@@ -63,7 +82,10 @@ function GraphPage() {
   const [matchId, setMatchId] = useState<string | null>(null)
   const [priceMode, setPriceMode] = useState<PriceMode>('prob')
   const [selectedKey, setSelectedKey] = useState<string | null>(null)
-  const [picked, setPicked] = useState<GraphSlot | null>(null)
+  /** 选中的盘口槽位 key。**关掉弹窗不清它** —— 侧栏还要显示这个盘口 */
+  const [pickedKey, setPickedKey] = useState<string | null>(null)
+  /** 弹窗开关。与 pickedKey 分开：关掉弹窗不该丢掉「刚才看的是哪个盘口」 */
+  const [orderOpen, setOrderOpen] = useState(false)
 
   // 首次拿到列表时自动选盘口最多的那场（列表已按盘口数排序）
   useEffect(() => {
@@ -71,7 +93,35 @@ function GraphPage() {
   }, [matches, matchId])
 
   const match = matches.find((m) => m.id === matchId) ?? null
-  const { graph, slots, goals, prevPrices } = useMarketGraph(match)
+  const { graph, slots, goals, prevPrices, wsState, quotedCount, book, tickByToken } =
+    useMarketGraph(match)
+
+  /**
+   * 存的是**槽位的 key，不是槽位对象**。
+   *
+   * slots 每次报价变动都会重算（resolveTemplate 依赖 graph），对象引用每轮
+   * 都是新的。存对象会让弹窗里的 target 在每次价格跳动后被判为「新的」，
+   * 把用户正在填的表单重置掉。key 是稳定的。
+   */
+  const picked = useMemo(() => slots.find((s) => s.key === pickedKey) ?? null, [slots, pickedKey])
+
+  /**
+   * 同一张盘口的可下单侧，给弹窗做 Over/Under 切换。
+   *
+   * 按 nodeId 找兄弟槽位而不是存两侧 token：画布点的是「哪个节点、哪一侧」，
+   * 换侧要重新取的是那一侧的 token 与报价 —— 只有 slots 拿得到全部两侧。
+   */
+  const pickedSides = useMemo(() => {
+    if (!picked?.nodeId) return []
+    return slots
+      .filter((s) => s.nodeId === picked.nodeId && s.tokenId)
+      .map((s) => ({ name: s.sideName ?? s.label, tokenId: s.tokenId as string }))
+  }, [picked, slots])
+
+  const pickedNode = useMemo(
+    () => (picked?.nodeId ? (graph?.nodes.find((n) => n.id === picked.nodeId) ?? null) : null),
+    [graph, picked],
+  )
 
   return (
     // h-dvh + flex 列，而不是 min-h-screen：
@@ -91,22 +141,16 @@ function GraphPage() {
         </div>
 
         <div className="flex min-w-0 items-center gap-2">
-          <select
-            value={matchId ?? ''}
-            onChange={(e) => {
-              setMatchId(e.target.value || null)
+          <MatchPicker
+            matches={matches}
+            matchId={matchId}
+            onPick={(id) => {
+              setMatchId(id)
               setSelectedKey(null)
-              setPicked(null)
+              setPickedKey(null)
+              setOrderOpen(false)
             }}
-            className="max-w-[150px] truncate rounded-md border border-border bg-input px-2 py-1 text-xs text-foreground sm:max-w-[420px]"
-          >
-            {matches.length === 0 && <option value="">（无比赛）</option>}
-            {matches.map((m) => (
-              <option key={m.id} value={m.id}>
-                {m.title}（{m.markets.length} 盘口）
-              </option>
-            ))}
-          </select>
+          />
 
           <button
             type="button"
@@ -174,7 +218,10 @@ function GraphPage() {
               prevPrices={prevPrices}
               selectedKey={selectedKey}
               onSelect={setSelectedKey}
-              onBuy={setPicked}
+              onBuy={(s) => {
+                setPickedKey(s.key)
+                setOrderOpen(true)
+              }}
             />
           ) : (
             <Centered>选一场比赛</Centered>
@@ -197,10 +244,12 @@ function GraphPage() {
                   k="违约"
                   v={graph.stats.violations > 0 ? `${graph.stats.violations} 处` : '无'}
                 />
+                <QuoteRow wsState={wsState} quotedCount={quotedCount} />
               </div>
               <p className="mt-2 text-[10px] leading-snug text-muted-foreground">
-                价格是 Gamma 快照（上一次成交价），不是可成交的买卖盘。
-                画布上标了「快照」的节点即为此。
+                {quotedCount > 0
+                  ? '有实时报价的节点显示真实买卖盘，可用来下单；其余仍是 Gamma 快照（上一次成交价），画布上标着「快照」。'
+                  : '当前全是 Gamma 快照（上一次成交价），不是可成交的买卖盘。赛前盘口常常没有挂单，这是正常的。'}
               </p>
             </Panel>
           )}
@@ -208,22 +257,63 @@ function GraphPage() {
           <WalletPanel />
 
           <Panel title="订单">
-            {picked ? (
+            {pickedNode && picked ? (
               <div className="space-y-1.5 text-xs">
                 <KV k="盘口" v={picked.label} />
                 <KV k="方向" v={picked.sideName ?? '—'} />
-                <KV k="盘口 id" v={picked.marketId ?? '—'} />
-                <p className="mt-2 text-[10px] leading-snug text-muted-foreground">
-                  下单链路（CLOB 签名 + USDC.e 授权）还没接。签名要用 EOA，
-                  资金走代理钱包，signatureType 必须是 POLY_1271。
-                </p>
+                <KV
+                  k="现价"
+                  v={`${formatTickPrice(
+                    picked.price,
+                    tickByToken[picked.tokenId ?? ''] ?? DEFAULT_TICK,
+                  )}${
+                    tickByToken[picked.tokenId ?? ''] === '0.001' ? '（0.001 档）' : ''
+                  }`}
+                />
+                <KV k="报价" v={picked.quoted ? '实时双边盘' : '快照（上一次成交价）'} />
+                <button
+                  type="button"
+                  onClick={() => setOrderOpen(true)}
+                  className="mt-1.5 w-full rounded-md border border-primary/40 bg-primary/10 px-2 py-1.5 text-[11px] font-medium text-primary hover:bg-primary/20"
+                >
+                  {orderOpen ? '下单面板已打开' : '打开下单面板'}
+                </button>
               </div>
             ) : (
-              <p className="text-xs text-muted-foreground">点图上的节点选盘口。</p>
+              <p className="text-xs text-muted-foreground">点图上绑了盘口的节点下单。</p>
             )}
           </Panel>
         </aside>
       </main>
+
+      {/* 下单弹窗。挂在页面根上而不是节点 onClick 那一刻就地展开：
+          弹窗要跨「换侧」存活，而 onBuy 只在点击瞬间给得出数据。
+          换侧只改 pickedKey，剩下的（token、报价、tick）都由 slots 重新推出来。 */}
+      {orderOpen && picked && picked.tokenId && pickedNode && graph && (
+        <Suspense
+          fallback={
+            <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/70 p-3 text-sm text-muted-foreground backdrop-blur-sm">
+              正在加载下单面板…
+            </div>
+          }
+        >
+          <OrderDialog
+            tokenId={picked.tokenId}
+            sideName={picked.sideName ?? picked.label}
+            marketLabel={picked.label}
+            marketQuestion={pickedNode.questionZh || pickedNode.questionEn || pickedNode.desc.label}
+            eventTitle={graph.title}
+            sides={pickedSides}
+            onSelectSide={(s) => {
+              const hit = slots.find((x) => x.tokenId === s.tokenId)
+              if (hit) setPickedKey(hit.key)
+            }}
+            tickByToken={tickByToken}
+            quotes={book}
+            onClose={() => setOrderOpen(false)}
+          />
+        </Suspense>
+      )}
     </div>
   )
 }
@@ -255,6 +345,41 @@ function KV({ k, v }: { k: string; v: string }) {
  * 代码查不到译名时显示「未知联赛」而不是显示代码本身：`col1` 对用户没有
  * 任何意义，而缺哪些代码由管理页面的缺失列表负责暴露。
  */
+/**
+ * 报价来源一行：实时 / 快照。
+ *
+ * 这一行是**能不能下单**的判据，不是装饰。只看画布上的 `quoted` 标记不够 ——
+ * applyLivePrices 会就地改节点，标记一旦置 true 就不会退回，断线后画布仍显示
+ * 「实时」而价格早已过期。所以真相在这里：WS 状态 + 拿到双边盘的 token 数。
+ *
+ * 赛前 0 实时是**正常**的，不是故障：那时盘口常常一张挂单都没有。
+ * 所以 0 的时候不报红，只说明现在是快照。
+ */
+function QuoteRow({ wsState, quotedCount }: { wsState: ConnState; quotedCount: number }) {
+  const live = quotedCount > 0
+  const text = live
+    ? `实时 ${quotedCount} 档`
+    : wsState === 'open'
+      ? '已连接，暂无挂单'
+      : wsState === 'connecting'
+        ? '连接中…'
+        : '快照'
+  return (
+    <div className="flex items-baseline justify-between gap-2">
+      <span className="shrink-0 text-muted-foreground">报价</span>
+      <span className="flex min-w-0 items-center gap-1.5">
+        <span
+          className={cn(
+            'size-1.5 shrink-0 rounded-full',
+            live ? 'bg-success' : wsState === 'open' ? 'bg-warning' : 'bg-muted-foreground',
+          )}
+        />
+        <span className="truncate text-right text-foreground">{text}</span>
+      </span>
+    </div>
+  )
+}
+
 function LeagueRow({ code, icon }: { code: string | null; icon: string | null }) {
   const zh = translateLeague(code)
   return (
