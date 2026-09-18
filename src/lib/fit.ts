@@ -7,27 +7,29 @@
  */
 
 /** 设计稿画布尺寸与节点半径。模板坐标就是按这个系画的 */
-export const VB = { width: 1334, height: 1775, r: 64 } as const
+export const VB = { width: 1334, height: 1775, r: 56 } as const
 
 /**
  * 内容边界的外扩量。
  *
  * 不能只按节点半径 64 留白：标签画在圆心上方 18px 处、涨跌箭头在下方 62px，
  * 都在圆外。按 r 裁会把最外圈节点的文字切掉。
+ *
+ * 设为 70 让包围盒更紧凑，初始画布更接近屏幕大小，减少空白。
  */
-export const PAD = 85
+export const PAD = 70
 
 /**
  * 节点渲染后的最小可接受半径（CSS 像素）。
  *
- * 标签最小字号 17px（见 labelFont），画在圆内。半径低于 28px 时，
+ * 标签最小字号 17px（见 labelFont），画在圆内。半径低于 24px 时，
  * 17px 的字已经宽于圆的可用半宽，标签必然溢出或糊在一起——
  * 那时候「一屏看全」反而不如「贴宽 + 滚动」。
  *
- * 28 约是最小字号的 1.65 倍：考虑到标签会收缩字号（见 labelFont），
+ * 24 约是最小字号的 1.4 倍：考虑到标签会收缩字号（见 labelFont），
  * 这个阈值能在保持可读性的同时让更多内容适配进一屏。
  */
-export const MIN_NODE_R_PX = 28
+export const MIN_NODE_R_PX = 24
 
 /**
  * width 模式至少要比 contain 大这么多倍，才值得付纵向滚动的代价。
