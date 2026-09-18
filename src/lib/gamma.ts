@@ -134,23 +134,50 @@ function isSoccer(evt: GammaEvent): boolean {
  *
  * 时间窗用北京时区的「今天+明天」：足球赛程基本按亚洲时间展示，
  * 且晚场需要提前就能看到。与原项目取同一个窗口，免得两边看到的比赛不一样。
+ *
+ * ## 为什么必须翻页
+ *
+ * `tag_id=1` 是**整个体育大类**，足球只是其中一小撮 —— 这个窗口里前 100 个
+ * 体育事件里只挑得出十来场足球。所以 `limit` 是「每页多少条」，不是
+ * 「一共要多少条」：抓满一页就带着 offset 继续翻，直到某页不满为止。
+ *
+ * 原项目（src/soccer/fetcher.ts）就是这么翻的，上限同样是 20 页。
+ * **不翻页会让比赛数量静默变少** —— 界面上完全看不出少了，只会奇怪
+ * 「怎么才 11 场」。这类少数据的 bug 比报错难查得多，所以这里不能省。
+ *
+ * 中途某一页失败**直接抛**，不做「拿到多少算多少」：那等于把静默截断
+ * 又做了一遍，只是换了个地方。宁可报错让人看见。
  */
-export async function fetchSoccerEvents(opts: { limit?: number } = {}): Promise<GammaEvent[]> {
+export async function fetchSoccerEvents(
+  opts: { limit?: number; maxPages?: number } = {},
+): Promise<GammaEvent[]> {
   const now = new Date()
   const start = new Date(
     Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - 1, 16, 0, 0),
   )
   const end = new Date(start.getTime() + 48 * 60 * 60 * 1000)
 
-  const events = await gammaGet<GammaEvent[]>('/events', {
+  const pageSize = opts.limit ?? 100
+  const maxPages = opts.maxPages ?? 20
+  const baseParams = {
     tag_id: SPORTS_TAG_ID,
     active: true,
     closed: false,
     end_date_min: start.toISOString(),
     end_date_max: end.toISOString(),
-    limit: opts.limit ?? 100,
-  })
-  return (events ?? []).filter(isSoccer)
+    limit: pageSize,
+  }
+
+  const events: GammaEvent[] = []
+  for (let page = 0; page < maxPages; page++) {
+    // Gamma 的游标是「已经取到多少条」，不是页码
+    const batch = await gammaGet<GammaEvent[]>('/events', { ...baseParams, offset: events.length })
+    if (!Array.isArray(batch) || batch.length === 0) break
+    events.push(...batch)
+    if (batch.length < pageSize) break
+  }
+
+  return events.filter(isSoccer)
 }
 
 /**
@@ -307,6 +334,16 @@ export function toGraphMarketInput(m: GammaMarket) {
     volume: m.volume ?? null,
     liquidity: m.liquidity ?? null,
   }
+}
+
+/**
+ * 盘口的两个 CLOB token id。
+ *
+ * Gamma 把它存成 JSON **字符串**（同 parseJsonArray 的注释），直接当数组用
+ * 会逐字符遍历 —— 下单时会把 "[" 当成 tokenId 发出去。
+ */
+export function clobTokenIdsOf(m: GammaMarket): string[] {
+  return parseJsonArray<string>(m.clobTokenIds)
 }
 
 /**

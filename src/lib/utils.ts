@@ -33,3 +33,24 @@ export function formatVolume(n: number | string | null | undefined): string {
   if (!Number.isFinite(num)) return '—'
   return `$${formatNumber(num)}`
 }
+
+/**
+ * 开赛时间。**固定按 Asia/Shanghai 显示**，与原项目足球页的 formatTime 同口径 ——
+ * 这边赛程、盘口、订单都按北京时间看，跟着浏览器时区走会让两处对不上
+ * （用户报过的「订单页时间差 8 小时」就是两边时区口径不一致引起的）。
+ *
+ * Gamma 的 endDate 是带 Z 的完整 ISO，所以这里没有原项目那个
+ * 「裸串当 UTC 补 Z」的坑，直接 new Date 即可。
+ */
+export function formatKickoff(iso: string | null | undefined): string {
+  if (!iso) return '—'
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return '—'
+  return d.toLocaleString('zh-CN', {
+    timeZone: 'Asia/Shanghai',
+    month: 'numeric',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  })
+}

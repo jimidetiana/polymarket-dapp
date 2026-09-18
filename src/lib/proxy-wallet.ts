@@ -9,10 +9,18 @@
  * 所以直接读 EOA 的 USDC.e 余额会显示 $0 —— 即使账户里有钱。
  * 这不是 bug，是 Polymarket 的账户模型。实测就踩到了：钱包面板一片 0。
  *
- * 下单时同样要区分两个地址（见原型 src/api/clob.ts 的注释）：
- *   - signer  = EOA，负责 EIP-712 签名
- *   - funder  = 代理地址，L2 认证头里的 POLY_ADDRESS 必须是它
- *   - signatureType = POLY_1271（合约签名），不是 EOA 的 0
+ * 下单时同样要区分两个地址：
+ *   - signer  = EOA，负责 EIP-712 签名，**也是 L2 认证头 POLY_ADDRESS 的值**
+ *   - funder  = 代理地址（订单里的 maker / SDK 的 account wallet），资金在那
+ *   - signatureType = 3（DEPOSIT_WALLET），不是 EOA 的 0
+ *
+ * ⚠️ 早先这里写的是「POLY_ADDRESS 必须是代理地址」，**那是错的**，已订正。
+ * POLY_ADDRESS 恒为**签名地址**，账户钱包只作为订单的 maker 出现。搞反会
+ * 得到 401，而且报错看起来很像「配置错了」，很容易往凭据过期那条路上查。
+ * 这一条在交易端项目里也踩过一次（见 src/api/clob-v2.ts 的表头注释）。
+ *
+ * 另外 signatureType 的口径：3 的官方名是 DEPOSIT_WALLET，社区叫 POLY_1271
+ * （因为 Deposit Wallet 走 ERC-1271 验签）。两者指同一个值，别当成两个类型。
  * 三者对不上，CLOB 会拒单或返回令人费解的错误。
  *
  * ## 代理地址怎么拿
