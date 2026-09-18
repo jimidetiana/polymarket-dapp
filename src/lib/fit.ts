@@ -7,34 +7,36 @@
  */
 
 /** 设计稿画布尺寸与节点半径。模板坐标就是按这个系画的 */
-export const VB = { width: 1334, height: 1775, r: 76 } as const
+export const VB = { width: 1334, height: 1775, r: 64 } as const
 
 /**
  * 内容边界的外扩量。
  *
- * 不能只按节点半径 76 留白：标签画在圆心上方 18px 处、涨跌箭头在下方 62px，
+ * 不能只按节点半径 64 留白：标签画在圆心上方 18px 处、涨跌箭头在下方 62px，
  * 都在圆外。按 r 裁会把最外圈节点的文字切掉。
  */
-export const PAD = 100
+export const PAD = 85
 
 /**
  * 节点渲染后的最小可接受半径（CSS 像素）。
  *
- * 标签最小字号 17px（见 labelFont），画在圆内。半径低于 34px 时，
+ * 标签最小字号 17px（见 labelFont），画在圆内。半径低于 28px 时，
  * 17px 的字已经宽于圆的可用半宽，标签必然溢出或糊在一起——
  * 那时候「一屏看全」反而不如「贴宽 + 滚动」。
  *
- * 34 是最小字号的两倍：字号 17 的一行中文约需 ±34 半宽才装得下。
+ * 28 约是最小字号的 1.65 倍：考虑到标签会收缩字号（见 labelFont），
+ * 这个阈值能在保持可读性的同时让更多内容适配进一屏。
  */
-export const MIN_NODE_R_PX = 34
+export const MIN_NODE_R_PX = 28
 
 /**
  * width 模式至少要比 contain 大这么多倍，才值得付纵向滚动的代价。
  *
  * 窄容器（平板竖屏 522×1036）卡在宽度上，两种模式的缩放几乎一样——
- * 那时滚动换不来任何可读性。1.15 = 至少大 15% 才换。
+ * 那时滚动换不来任何可读性。1.08 = 至少大 8% 才换。
+ * 降低这个阈值让更多场景优先选择 contain 模式，尽量在一屏内显示全部节点。
  */
-export const WIDTH_GAIN = 1.15
+export const WIDTH_GAIN = 1.08
 
 export type Box = { x: number; y: number; w: number; h: number }
 export type FitMode = 'contain' | 'width'

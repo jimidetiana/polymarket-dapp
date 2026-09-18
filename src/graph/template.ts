@@ -57,7 +57,7 @@ export interface TemplateSlot {
 }
 
 /** 设计稿的画布尺寸，前端按它设 viewBox */
-export const TEMPLATE_VIEWBOX = { width: 1334, height: 1775, nodeRadius: 76 }
+export const TEMPLATE_VIEWBOX = { width: 1334, height: 1775, nodeRadius: 64 }
 
 /**
  * 22 个槽位。坐标直接取设计稿，Y 已翻转（PDF 的 Y 向上，SVG 向下）：
