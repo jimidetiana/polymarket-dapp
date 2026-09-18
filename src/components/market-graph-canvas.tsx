@@ -40,7 +40,7 @@ import { cn } from '@/lib/utils'
 import { formatVolume } from '@/lib/utils'
 import { formatPrice, type PriceMode } from '@/lib/odds'
 import type { GraphGoalCounts, GraphNode, GraphSlot, MarketGraph } from '@/types/market-graph'
-import { VB, chooseFit, contentBox } from '@/lib/fit'
+import { BASE_R, layoutSlots } from '@/lib/layout'
 import {
   IDENTITY,
   MIN_K,
@@ -183,12 +183,6 @@ export function MarketGraphCanvas({
 }: Props) {
   const [hover, setHover] = useState<GraphSlot | null>(null)
 
-  const byKey = useMemo(() => {
-    const m = new Map<string, GraphSlot>()
-    for (const s of slots) m.set(s.key, s)
-    return m
-  }, [slots])
-
   /** 与选中节点直接相连的槽位，用来做聚焦高亮 */
   const neighbours = useMemo(() => {
     if (!selectedKey) return null
@@ -207,10 +201,25 @@ export function MarketGraphCanvas({
   }, [graph.nodes])
 
   const [wrapRef, size] = useElementSize<HTMLDivElement>()
-  const box = useMemo(() => contentBox(slots), [slots])
 
-  // 适配判据是纯算术，抽到 lib/fit 里跟测试放一起（见 fit.test.ts）
-  const { mode: fit, widthPx, heightPx } = chooseFit(size, box)
+  /**
+   * 按容器比例重排槽位。
+   *
+   * 排布是纯算术，抽到 lib/layout 里跟测试放一起（见 layout.test.ts）。
+   * 拉伸后的 viewBox 与容器同比例，所以整图恒定「刚好铺满」——
+   * 不再需要在「一屏看全」和「贴宽滚动」之间选，也就没有 fit 模式了。
+   */
+  const { slots: placed, scale: nodeScale, viewBox: box } = useMemo(
+    () => layoutSlots(slots, size),
+    [slots, size],
+  )
+
+  /** 重排后的坐标查表，连线要用 */
+  const posByKey = useMemo(() => {
+    const m = new Map<string, { x: number; y: number }>()
+    for (const s of placed) m.set(s.key, { x: s.x, y: s.y })
+    return m
+  }, [placed])
 
   const [view, setView] = useState<View>(IDENTITY)
 
@@ -339,11 +348,10 @@ export function MarketGraphCanvas({
     <div
       ref={wrapRef}
       className={cn(
-        'relative h-full w-full',
-        // 放大后自己接管平移，交给浏览器滚动会和手势打架
-        zoomed ? 'overflow-hidden' : 'overflow-auto',
-        // width 模式下图比容器窄时居中，免得贴在左边
-        fit === 'width' && !zoomed && 'flex justify-center',
+        // 画布永远等于容器：viewBox 与容器同比例，没有溢出可滚，
+        // 所以这里恒定 overflow-hidden（原来的 overflow-auto 是给
+        // width 模式那个比容器高一倍的 SVG 用的，现在不存在了）。
+        'relative h-full w-full overflow-hidden',
       )}
       // 关掉浏览器默认的触摸手势（下拉刷新、双指缩放整页），
       // 否则手机上捏合会缩放整个页面而不是画布
@@ -354,20 +362,10 @@ export function MarketGraphCanvas({
       onPointerCancel={endPointer}
     >
       <svg
-        // 用内容包围盒而不是设计稿全幅：模板四周本来就有空白，
-        // 按全幅缩放等于把空白也一起缩进去，屏幕越宽浪费越明显。
+        // viewBox 由 layoutSlots 给，与容器 1:1 —— 槽位坐标已经按容器比例
+        // 拉伸过，所以这里不需要 meet 留边，也不再有「贴宽 + 滚动」的分支。
         viewBox={`${box.x} ${box.y} ${box.w} ${box.h}`}
-        preserveAspectRatio="xMidYMid meet"
-        className={cn(
-          'shrink-0',
-          fit === 'contain' || zoomed ? 'h-full w-full' : 'w-full',
-          zoomed && 'cursor-grab',
-        )}
-        style={
-          fit === 'width' && !zoomed && widthPx > 0
-            ? { width: widthPx, height: heightPx }
-            : undefined
-        }
+        className={cn('h-full w-full', zoomed && 'cursor-grab')}
         onClick={(e) => {
           if (wasDrag()) return
           if (e.target === e.currentTarget) onSelect(null)
@@ -378,8 +376,10 @@ export function MarketGraphCanvas({
         {/* 连线压在节点下面 */}
         <g>
           {templateEdges.map(([a, b]) => {
-            const sa = byKey.get(a)
-            const sb = byKey.get(b)
+            // 用重排后的坐标，不是槽位原始坐标 —— 原始坐标是设计稿系，
+            // 连线会画到画布外面去。
+            const sa = posByKey.get(a)
+            const sb = posByKey.get(b)
             if (!sa || !sb) return null
             const dim = neighbours != null && !(neighbours.has(a) && neighbours.has(b))
             return (
@@ -390,7 +390,9 @@ export function MarketGraphCanvas({
                 x2={sb.x}
                 y2={sb.y}
                 stroke="var(--pm-border)"
-                strokeWidth={5}
+                // 线宽跟着节点缩：viewBox 现在是 1:1 像素，写死 5 会让小节点
+                // 被粗线压住（原来 viewBox 有 0.58 的缩放，视觉上只有 3px）。
+                strokeWidth={5 * nodeScale}
                 opacity={dim ? 0.15 : 0.65}
               />
             )
@@ -398,7 +400,7 @@ export function MarketGraphCanvas({
         </g>
 
         <g>
-          {slots.map((s) => {
+          {placed.map((s) => {
             const isGoals = s.kind === 'goals'
             const empty = !isGoals && !s.nodeId
             const selected = selectedKey === s.key
@@ -427,6 +429,10 @@ export function MarketGraphCanvas({
             return (
               <g
                 key={s.key}
+                // 拉伸只作用在圆心坐标；节点自身按 r/BASE_R 等比缩放，
+                // 所以圆永远是圆、字永远不斜。内部偏移与字号仍写设计稿的数，
+                // 跟着这层 scale 一起变 —— 不必再手写第二份「小屏用的字号」。
+                transform={`translate(${s.x} ${s.y}) scale(${nodeScale})`}
                 opacity={dim ? 0.28 : 1}
                 style={{ cursor: empty ? 'default' : 'pointer' }}
                 onClick={(ev) => {
@@ -447,9 +453,9 @@ export function MarketGraphCanvas({
                 onMouseLeave={() => setHover(null)}
               >
                 <circle
-                  cx={s.x}
-                  cy={s.y}
-                  r={VB.r}
+                  cx={0}
+                  cy={0}
+                  r={BASE_R}
                   fill={fill}
                   stroke={stroke}
                   strokeWidth={selected ? 6 : 3}
@@ -458,8 +464,8 @@ export function MarketGraphCanvas({
                 {/* 已打出的标记：不让「已打出」只靠颜色表达 */}
                 {hit === true && (
                   <text
-                    x={s.x}
-                    y={s.y - 46}
+                    x={0}
+                    y={-46}
                     textAnchor="middle"
                     fill="#ffffff"
                     style={{ fontSize: 18, fontWeight: 700 }}
@@ -470,8 +476,8 @@ export function MarketGraphCanvas({
 
                 {/* 上：盘口信息 */}
                 <text
-                  x={s.x}
-                  y={s.y - 18}
+                  x={0}
+                  y={-18}
                   textAnchor="middle"
                   fill={empty ? 'var(--pm-neutral-400)' : '#ffffff'}
                   style={{ fontSize: labelFont(s.label), fontWeight: 600 }}
@@ -482,8 +488,8 @@ export function MarketGraphCanvas({
                 {isGoals ? (
                   /* 推断节点没有买卖两侧，居中显示进球数 */
                   <text
-                    x={s.x}
-                    y={s.y + 30}
+                    x={0}
+                    y={30}
                     textAnchor="middle"
                     fill="#ffffff"
                     className="font-mono"
@@ -493,8 +499,8 @@ export function MarketGraphCanvas({
                   </text>
                 ) : empty ? (
                   <text
-                    x={s.x}
-                    y={s.y + 26}
+                    x={0}
+                    y={26}
                     textAnchor="middle"
                     fill="var(--pm-neutral-500)"
                     style={{ fontSize: 24, fontWeight: 600 }}
@@ -505,27 +511,27 @@ export function MarketGraphCanvas({
                   <>
                     {/* 品字形的横竖分隔：让「上一 / 下二」的结构一眼可读 */}
                     <line
-                      x1={s.x - 52}
-                      y1={s.y - 2}
-                      x2={s.x + 52}
-                      y2={s.y - 2}
+                      x1={-52}
+                      y1={-2}
+                      x2={52}
+                      y2={-2}
                       stroke="#ffffff"
                       strokeWidth={1}
                       opacity={0.35}
                     />
                     <line
-                      x1={s.x}
-                      y1={s.y - 2}
-                      x2={s.x}
-                      y2={s.y + 46}
+                      x1={0}
+                      y1={-2}
+                      x2={0}
+                      y2={46}
                       stroke="#ffffff"
                       strokeWidth={1}
                       opacity={0.35}
                     />
                     {/* 下左：卖盘（你买入要付的价） */}
                     <text
-                      x={s.x - 27}
-                      y={s.y + 16}
+                      x={-27}
+                      y={16}
                       textAnchor="middle"
                       fill="#ffffff"
                       style={{ fontSize: 15, fontWeight: 600 }}
@@ -534,8 +540,8 @@ export function MarketGraphCanvas({
                       卖
                     </text>
                     <text
-                      x={s.x - 27}
-                      y={s.y + 38}
+                      x={-27}
+                      y={38}
                       textAnchor="middle"
                       fill="#ffffff"
                       className="font-mono"
@@ -545,8 +551,8 @@ export function MarketGraphCanvas({
                     </text>
                     {/* 下右：买盘（你卖出能收的价） */}
                     <text
-                      x={s.x + 27}
-                      y={s.y + 16}
+                      x={27}
+                      y={16}
                       textAnchor="middle"
                       fill="#ffffff"
                       style={{ fontSize: 15, fontWeight: 600 }}
@@ -555,8 +561,8 @@ export function MarketGraphCanvas({
                       买
                     </text>
                     <text
-                      x={s.x + 27}
-                      y={s.y + 38}
+                      x={27}
+                      y={38}
                       textAnchor="middle"
                       fill="#ffffff"
                       className="font-mono"
@@ -567,8 +573,8 @@ export function MarketGraphCanvas({
                     {/* 价格变化：贴在底部，不挤占品字形 */}
                     {delta != null && Math.abs(delta) >= 0.001 && (
                       <text
-                        x={s.x}
-                        y={s.y + 62}
+                        x={0}
+                        y={62}
                         textAnchor="middle"
                         className="font-mono"
                         fill={delta > 0 ? 'var(--pm-state-success)' : 'var(--pm-state-error)'}

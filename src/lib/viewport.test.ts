@@ -20,11 +20,26 @@ import {
   transformOf,
   zoomAt,
 } from './viewport'
+import { layoutSlots } from './layout'
+import { TEMPLATE_SLOTS } from '../graph/template'
 
-/** 模板 22 个槽位的真实包围盒（含 PAD=100） */
+/**
+ * 模板 22 个槽位的原始坐标。
+ *
+ * 直接引模板而不是抄一份：抄下来的坐标改了模板也不会红，
+ * 断言会悄悄失去意义（stale `s * 76` 就是这么来的）。
+ */
+const REAL_SLOTS = TEMPLATE_SLOTS.map((s) => ({ x: s.x, y: s.y }))
+
+/**
+ * 一个测试用的内容盒，用来验算 baseScale / clampView / clientToUser。
+ *
+ * 这些函数是通用几何，与「viewBox 是否等于容器」无关 —— 传一个非等比的盒
+ * 反而更能测出留边补偿写错。真实运行时 viewBox 由 layoutSlots 给，恒等于容器。
+ */
 const BOX = { x: 12, y: 12, w: 1310, h: 1751 }
 
-/** 手机竖屏容器：宽度受限，contain 与 width 两种模式都救不了，只能靠缩放 */
+/** 手机竖屏容器：空间本身不够，排布省不出来，只能靠缩放 */
 const PHONE = { w: 366, h: 700 }
 /** 桌面 1080p 的画布区 */
 const DESKTOP = { w: 1608, h: 1004 }
@@ -153,10 +168,14 @@ test('transformOf 顺序是先 translate 再 scale', () => {
 })
 
 test('手机小屏靠放大能达到可读半径', () => {
-  // 这是加缩放的动机：contain 下节点半径只有 21px，标签约 5px，读不了
-  const { s } = baseScale(PHONE, BOX)
-  const rBase = s * 76 // VB.r
-  assert.ok(rBase < 34, `基础半径 ${rBase} 本应偏小`)
-  // 放大 2 倍即可越过 34px 可读线
-  assert.ok(rBase * 2 >= 34, `放大 2 倍后 ${rBase * 2} 应可读`)
+  // 这是加缩放的动机：手机竖屏上 22 个槽位排下来，单个节点半径被挤到
+  // MIN_R 附近，标签虽不重叠但偏小；剩下的可读性交给捏合放大。
+  //
+  // 半径直接问 layoutSlots，不再用 baseScale * 常量反推 —— 原来那样写
+  // 等于把基准半径抄成字面量 76，改了 layout.ts 里的常量这里也不会红，
+  // 断言会悄悄失去意义（已经发生过一次）。
+  const { r } = layoutSlots(REAL_SLOTS, PHONE)
+  assert.ok(r <= 30, `手机上半径 ${r} 本应偏小`)
+  // 捏合放大 3 倍后越过 34px 可读线
+  assert.ok(r * 3 >= 34, `放大 3 倍后 ${r * 3} 应可读`)
 })
