@@ -272,9 +272,36 @@ export function MarketGraphCanvas({
   const drag = useRef<{
     pointers: Map<number, { x: number; y: number }>
     moved: number
+    /** 已经真的开始拖动、因而被捕获的指针。避免重复捕获与重复释放 */
+    captured: Set<number>
     /** 双指起始间距与中点（用户坐标），捏合时用 */
     pinch: { dist: number; u: { x: number; y: number }; k: number } | null
-  }>({ pointers: new Map(), moved: 0, pinch: null })
+  }>({ pointers: new Map(), moved: 0, captured: new Set(), pinch: null })
+
+  /**
+   * 捕获指针 —— 只在**确实开始拖动之后**调用，绝不在一按下时调用。
+   *
+   * 按下就 `setPointerCapture(容器)` 会把随后的 `mouseup` 重定向到容器，
+   * 而浏览器把 `click` 派发在 mousedown 与 mouseup 两个目标的**最近公共
+   * 祖先**上。于是 click 落在容器身上，节点的 onClick 一辈子收不到 ——
+   * 鼠标点节点完全没反应。右下角 +/− 按钮走的是同一条链路，一起遭殃。
+   *
+   * 触屏不受影响：touch 事件不跟着指针捕获走，click 仍按手指按下的元素
+   * 生成。所以这个坑只在桌面鼠标上露头，成了「手机好、电脑坏」的怪象。
+   *
+   * 位移超过点击容差之后再捕获就没有这个问题 —— 那时用户本来就不打算点，
+   * 而捕获是「拖出画布外还能继续收到事件」所必需的。
+   */
+  const capturePointer = (el: HTMLElement, pointerId: number) => {
+    const d = drag.current
+    if (d.captured.has(pointerId)) return
+    try {
+      el.setPointerCapture(pointerId)
+      d.captured.add(pointerId)
+    } catch {
+      // 指针已经抬起了，没什么可捕获的
+    }
+  }
 
   const onPointerDown = (e: React.PointerEvent) => {
     const { px, py } = localPoint(e)
@@ -290,8 +317,8 @@ export function MarketGraphCanvas({
         k: view.k,
       }
     }
-    // 捕获指针，拖到画布外也能继续收到事件
-    ;(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId)
+    // 这里**故意不捕获**：一按下就捕获会把 click 从节点挪到容器上，
+    // 鼠标就点不动节点了。等位移超过容差再由 onPointerMove 捕获。
   }
 
   const onPointerMove = (e: React.PointerEvent) => {
@@ -302,6 +329,9 @@ export function MarketGraphCanvas({
     d.pointers.set(e.pointerId, { x: px, y: py })
 
     if (d.pointers.size >= 2 && d.pinch) {
+      // 捏合肯定是手势不是点击，两个指针当场都捕获，免得手指滑出容器就断
+      const el = e.currentTarget as HTMLElement
+      for (const id of d.pointers.keys()) capturePointer(el, id)
       const [a, b] = [...d.pointers.values()]
       const dist = Math.hypot(a.x - b.x, a.y - b.y)
       if (d.pinch.dist > 0) {
@@ -317,6 +347,9 @@ export function MarketGraphCanvas({
     const dx = px - prev.x
     const dy = py - prev.y
     d.moved += Math.hypot(dx, dy)
+    // 位移过了容差才认定是拖动：此时捕获，拖出画布外也能继续收到事件。
+    // 容差之内不算拖，也就不捕获，click 照旧落在节点上（见 capturePointer）。
+    if (d.moved > DRAG_SLOP_PX) capturePointer(e.currentTarget as HTMLElement, e.pointerId)
     // 只有放大后才允许拖：k=1 时 clampView 会把平移夹回 0，拖动是无效动作，
     // 此时保持默认行为（让容器/页面自己滚）更合理。
     if (view.k > MIN_K + 1e-6) setView((v) => panBy(v, dx, dy, size, box))
@@ -324,6 +357,15 @@ export function MarketGraphCanvas({
 
   const endPointer = (e: React.PointerEvent) => {
     const d = drag.current
+    // 捕获在 pointerup 时本来就会自动放开，这里显式释放是为了让
+    // pointercancel 也走同一条路径，不留下半个捕获态
+    if (d.captured.delete(e.pointerId)) {
+      try {
+        ;(e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId)
+      } catch {
+        // 已经释放了
+      }
+    }
     d.pointers.delete(e.pointerId)
     if (d.pointers.size < 2) d.pinch = null
   }
