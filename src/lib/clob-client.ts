@@ -32,8 +32,14 @@
  * 「配置错了」。SDK 内部已经处理，这条注释是防止以后有人「顺手改回去」。
  */
 import { createPublicClient, createSecureClient, OrderSide, type SecureClient } from '@polymarket/client'
+// ⚠️ `/actions` 子路径，不是包根。根导出里没有 fetchBuilderFeeRates ——
+// 从 '@polymarket/client' 引会拿到 undefined：构建期不报错（类型上只是个
+// 不存在的具名导出，有的打包器会静默给 undefined），运行时才炸。
+// 与下面「补齐交易授权」注释里 isWalletDeployed 那个坑同源。
+import { fetchBuilderFeeRates } from '@polymarket/client/actions'
 import { signerFrom } from '@polymarket/client/viem'
 import type { WalletClient } from 'viem'
+import { builderCode } from './builder'
 
 export type OrderSideName = 'BUY' | 'SELL'
 export type OrderKind = 'market' | 'limit'
@@ -86,6 +92,42 @@ const publicClient = createPublicClient()
 
 export async function fetchBook(assetId: string) {
   return publicClient.fetchOrderBook({ assetId })
+}
+
+/**
+ * 查我们这个 builder code 的**实际**费率。
+ *
+ * ## 为什么走公共客户端
+ *
+ * `fetchBuilderFeeRates` 的签名是 `(client: BaseClient, request)`，`BaseClient`
+ * 包含公共客户端 —— **不需要鉴权、不弹签名**。这一点决定了调用时机：费率能在
+ * 用户还没连钱包时就查出来，而用户本来就该在决定连不连钱包之前看到要收多少。
+ *
+ * ## 这是费率的唯一真相来源
+ *
+ * 请求参数只有 `builderCode`，**没有 user/wallet** —— 费率按 code 配，与谁下单
+ * 无关，所以一个构建只有一个答案，不必每单查一次。
+ *
+ * 而 `SignedOrder` 的字段里**没有 feeRate**（只有 `builder`），所以费率也不是
+ * 我们签进订单里的东西：交易所拿 `builder` 去它自己的库里查，按查到的数扣。
+ * 也就是说 lib/fee.ts 里那个常量对**实际扣款毫无影响**，纯粹是显示用的占位 ——
+ * 后台改了费率而这边不改代码，界面就会一直显示旧数字。这个函数的存在就是为了
+ * 消掉那个偏差。
+ *
+ * code 格式非法时返回 null：那种情况下单本来也不会归因（builderCode() 同样返回
+ * undefined），费率查了也没意义。
+ *
+ * ## 字段名要对一遍
+ *
+ * SDK 返回的是 `{ builderCode, makerFeeRateBps, takerFeeRateBps }`，与我们
+ * lib/fee.ts 的 `{ makerBps, takerBps }` **不同名**。在这一层对上，别让 SDK 的
+ * 命名渗进界面代码。
+ */
+export async function fetchFeeRates(): Promise<{ makerBps: number; takerBps: number } | null> {
+  const code = builderCode()
+  if (!code) return null
+  const r = await fetchBuilderFeeRates(publicClient, { builderCode: code })
+  return { makerBps: Number(r.makerFeeRateBps), takerBps: Number(r.takerFeeRateBps) }
 }
 
 // ── 已认证客户端（每个 签名地址+账户钱包 组合一个）────────────
@@ -172,8 +214,23 @@ export type PlaceRequest = {
   size: number
 }
 
+/**
+ * 下单。
+ *
+ * ## 每个分支都要挂 builderCode
+ *
+ * 三个调用点各写一遍 `builderCode: builder`，看着像该抽出去的重复。不抽是因为
+ * 三个请求是**不同的类型**（限价 / 市价买 / 市价卖），字段各不相同，硬合并出来
+ * 的公共对象反而要靠类型断言才塞得进去。
+ *
+ * 漏掉任何一个分支的后果是**静默的**：那条路径上的单照样成交，只是不归因、
+ * 抽不到钱，而界面上仍然显示着手续费。所以以后加下单方式时记得连这个一起加。
+ */
 export async function placeOrder(client: SecureClient, req: PlaceRequest): Promise<PlaceOutcome> {
   const side = req.side === 'BUY' ? OrderSide.BUY : OrderSide.SELL
+  // 三个分支共用同一个值，但读一次就够 —— builderCode() 格式非法时会在控制台
+  // 响一声，每个分支各读一遍就会响三次。
+  const builder = builderCode()
 
   if (req.kind === 'limit') {
     return normalize(
@@ -182,6 +239,7 @@ export async function placeOrder(client: SecureClient, req: PlaceRequest): Promi
         price: req.price,
         size: req.size,
         side,
+        builderCode: builder,
       }),
     )
   }
@@ -196,6 +254,7 @@ export async function placeOrder(client: SecureClient, req: PlaceRequest): Promi
         // 两边不一致等于界面在骗人。
         amount: usdOf(req.size, req.price),
         maxPrice: req.price,
+        builderCode: builder,
       }),
     )
   }
@@ -206,6 +265,7 @@ export async function placeOrder(client: SecureClient, req: PlaceRequest): Promi
       side: OrderSide.SELL,
       shares: req.size,
       minPrice: req.price,
+      builderCode: builder,
     }),
   )
 }
@@ -250,6 +310,63 @@ export function explainError(e: unknown): string {
     return '你在钱包里拒绝了这次签名。'
   }
   return raw
+}
+
+// ── 交易授权 ────────────────────────────────────────────
+
+/**
+ * 交易前的链上授权状态。
+ *
+ * ## 为什么需要
+ *
+ * 钱进了账户钱包还不等于能下单：交易所要能动你的 pUSD（ERC-20 allowance），
+ * 也要能操作你的条件代币（ERC-1155 operator）。这两组授权没做，CLOB 会拒单 ——
+ * 而拒单的理由从订单响应里看不出来是「没授权」。
+ *
+ * ## 免 gas
+ *
+ * 授权由 Polymarket 的 relayer 代发，**不花用户的 gas**。这也是为什么官方
+ * 把它和「部署账户钱包」放在同一条通道上：两者都是 relayer 以账户钱包为
+ * 主体执行的操作，用户只需要签一次名。
+ */
+export type ApprovalState = {
+  isFullyApproved: boolean
+  /** 还缺几项。ERC-20 allowance 与 ERC-1155 操作员授权加在一起 */
+  missingCount: number
+}
+
+/**
+ * 查授权状态。**只读、不需要签名**，所以可以随便查。
+ *
+ * 走的是公共客户端（模块级已建的那个），不是 SecureClient —— 这一点很关键：
+ * 建 SecureClient 会让用户签一次名，而「打开面板看一眼还缺什么」不该弹签名。
+ */
+export async function fetchApprovalState(wallet: string): Promise<ApprovalState> {
+  const s = await publicClient.fetchTradingApprovalsState({ user: wallet })
+  const erc20 = s.missing?.erc20?.length ?? 0
+  const erc1155 = s.missing?.erc1155?.length ?? 0
+  return { isFullyApproved: s.isFullyApproved, missingCount: erc20 + erc1155 }
+}
+
+/**
+ * 补齐交易授权。
+ *
+ * ## 为什么这里没有「先部署账户钱包」那一步
+ *
+ * 一开始写了 `isWalletDeployed` + `deployDepositWallet`，两点都错：
+ *
+ *  1. 那两个函数**不在包根**，只在 `@polymarket/client/actions` 子路径下导出 ——
+ *     从根 import 会拿到 undefined，构建期未必报错，运行时才炸。
+ *  2. 更关键的是**不需要**：SDK 的 `createSecureClient` 自己会查部署状态并按需
+ *     部署（它的错误联合里带着 `IsWalletDeployedError | DeployDepositWalletError
+ *     | WaitForGaslessTransactionError` 三个，正是这条路径的产物）。等我们拿到
+ *     client 时钱包必然已经就绪，再查一次只是把同一个判断写第二遍。
+ *
+ * 所以这里就是一句话。多写的那层不只无用，还多一条会失败、会抛错、需要翻译的
+ * 分支 —— 而它失败时用户看到的原因跟真实原因无关。
+ */
+export async function setupApprovals(client: SecureClient): Promise<void> {
+  await client.setupTradingApprovals()
 }
 
 // ── 挂单与撤单 ───────────────────────────────────────────

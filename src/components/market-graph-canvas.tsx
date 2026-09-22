@@ -291,7 +291,8 @@ export function MarketGraphCanvas({
       }
     }
     // 捕获指针，拖到画布外也能继续收到事件
-    ;(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId)
+    ;
+    //(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId)
   }
 
   const onPointerMove = (e: React.PointerEvent) => {

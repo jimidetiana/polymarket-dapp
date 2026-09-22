@@ -1,10 +1,24 @@
-import { useState } from 'react'
-import { useAccount, useConnect, useDisconnect, useSwitchChain, useBalance, useReadContract } from 'wagmi'
+import { Suspense, lazy, useState } from 'react'
+import { useAccount, useConnect, useDisconnect, useSwitchChain } from 'wagmi'
 import type { Connector } from 'wagmi'
 import { polygon } from 'wagmi/chains'
-import { formatUnits, erc20Abi } from 'viem'
-import { useQuery } from '@tanstack/react-query'
-import { lookupProxyWallet, USDC_E_POLYGON } from '../lib/proxy-wallet'
+import { formatPol, formatUsd } from '../lib/money'
+import { useWalletBalances } from '../lib/use-wallet'
+import { cn } from '../lib/utils'
+
+/**
+ * 交易授权弹窗，**动态** import。
+ *
+ * 它链到底下会牵进 @polymarket/client（约 300 kB gzip），而本文件在主包里 ——
+ * 写成静态 import 会把那一整块打回首屏，App.tsx 把 OrderDialog 做成 lazy
+ * 省的正是这笔钱。动态 import 会被打包器切成独立 chunk，主包不受影响。
+ *
+ * 注意 `.then(m => ({ default: m.ApprovalsDialog }))`：那个模块是**具名导出**，
+ * React.lazy 只认 default。
+ */
+const ApprovalsDialog = lazy(() =>
+  import('./approvals-dialog').then((m) => ({ default: m.ApprovalsDialog })),
+)
 
 /** 地址缩写。0x1234...abcd */
 export function shortAddr(a?: string): string {
@@ -23,7 +37,7 @@ export function shortAddr(a?: string): string {
  *
  * ## 为什么要显式校验链
  *
- * Polymarket CLOB 在 Polygon 上（USDC.e 与条件代币都在那边）。
+ * Polymarket CLOB 在 Polygon 上（抵押代币 pUSD 与条件代币都在那边）。
  * 用户钱包很可能停在以太主网，此时下单会静默失败或白烧 gas，
  * 且报错信息完全看不出是链错了。所以链不对时**不给下单入口**，
  * 只给一个切链按钮。
@@ -175,57 +189,51 @@ function WalletPicker({
 }
 
 /**
- * 从 bigint 原始值格式化余额。
- *
- * wagmi v3 的 useBalance 不再返回 `formatted`，只给 `value: bigint` ——
- * 这反而更好：bigint 是精确的，自己用 formatUnits 转，不会在中途经过浮点。
- * 与 lib/tick.ts 里「钱的运算不碰浮点」是同一条原则。
- */
-function fmtUnits(v: bigint | undefined, decimals: number, dp: number): string {
-  if (v == null) return '—'
-  const s = formatUnits(v, decimals)
-  const n = Number(s)
-  return Number.isFinite(n) ? n.toFixed(dp) : s
-}
-
-/**
  * 钱包信息块（三块之一）。
  *
- * ## 关键：余额要读**代理钱包**，不是 EOA
+ * ## 关键：可交易余额要读**代理钱包**，不是 EOA
  *
  * Polymarket 把用户资金放在一个代理合约里，EOA 只负责签名。
  * 直接读 EOA 的 USDC.e 会显示 $0 —— 即使账户里有钱。实测就踩到了。
  * 详见 lib/proxy-wallet.ts。
  *
- * 所以这里显示两个地址：EOA（签名用）与代理（资金所在）。
- * 让人一眼看出钱在哪，而不是对着一个 0 猜。
+ * ## 但只读代理钱包是另一半坑
+ *
+ * 「读不到钱包里的钱」真正让人困惑的场景是**还没存款**：钱好端端躺在
+ * 签名地址上，代理钱包是空的，面板只显示一个 $0.00。数字上没错，但人看到
+ * 的是「我的钱不见了」。所以签名地址的余额也要读出来、摆出来 —— 几个余额
+ * 放在一起，人自己就判断得出「我还差一步存款」，而不是对着一个 0 猜。
+ *
+ * ## 存款这个动作**不在站内做**
+ *
+ * pUSD 由 Polymarket 链上 mint（ERC-4337 UserOp），一笔 ERC-20 转账变不出来；
+ * 硬做的结果是把钱卡在代理钱包里 —— 而本项目没有提现入口。所以这里只给一个
+ * 去官网的入口。理由见 lib/money.ts 顶部。
+ *
+ * ## 这个组件必须保持「不碰 SDK」
+ *
+ * 它在主包里。读数走 lib/use-wallet.ts（不引 @polymarket/client），只有点
+ * 「交易授权」时才动态加载弹窗。一旦在这里静态 import 任何牵进 SDK 的模块，
+ * 首屏包就会悄悄胖 300 kB —— 不会报错，也不会被类型检查发现。
  */
 export function WalletPanel() {
-  const { address, isConnected, chainId } = useAccount()
-  const onPolygon = chainId === polygon.id
-  const enabled = isConnected && onPolygon
+  const bal = useWalletBalances()
+  const { address, isConnected, onPolygon } = bal
+  const { proxy, proxyAddr } = bal
 
-  // 代理地址只能问 Polymarket，不能本地推导（CREATE2 salt 规则不公开）
-  const proxy = useQuery({
-    queryKey: ['proxy-wallet', address],
-    queryFn: () => lookupProxyWallet(address as string),
-    enabled: enabled && !!address,
-    staleTime: 10 * 60 * 1000, // 代理地址不会变，缓存久一点
-  })
-  const proxyAddr = proxy.data?.status === 'ok' ? proxy.data.proxyWallet : undefined
+  /** 交易授权弹窗。只在真正点开时才加载那块 chunk */
+  const [approvalsOpen, setApprovalsOpen] = useState(false)
 
-  // gas 费从 EOA 出，所以 POL 读 EOA
-  const native = useBalance({ address, query: { enabled } })
+  const inProxy = bal.trading.value
+  const inEoa = bal.eoaUsdcE.value
+  const inNative = bal.eoaNativeUsdc.value
 
-  // 交易资金在代理地址上，所以 USDC.e 读代理。
-  // wagmi v3 的 useBalance 去掉了 token 参数，ERC20 改用 useReadContract。
-  const usdc = useReadContract({
-    address: USDC_E_POLYGON,
-    abi: erc20Abi,
-    functionName: 'balanceOf',
-    args: proxyAddr ? [proxyAddr] : undefined,
-    query: { enabled: enabled && !!proxyAddr },
-  })
+  // 判据写成 === 0n 而不是 falsy：加载中时 value 是 undefined，
+  // 用 !inProxy 会在数据回来之前先闪一下「你还没存款」。
+  const notDeposited = inProxy === 0n && inEoa != null && inEoa > 0n
+  // 有原生 USDC 但 USDC.e 是 0。**这不是错误状态** —— 官方存款流程两种都收，
+  // 所以提示的口气是「这不影响你存款」，不是「你搞错了」。
+  const wrongToken = inEoa === 0n && inNative != null && inNative > 0n
 
   if (!isConnected) {
     return (
@@ -243,17 +251,29 @@ export function WalletPanel() {
     )
   }
 
-  // 没在 Polymarket 开过户 = 没有代理地址 = 无法交易。
-  // 必须说清楚，否则用户看到 $0 会以为是余额问题或程序坏了。
-  if (proxy.data?.status === 'no-account') {
+  /**
+   * 没在 Polymarket 开过户 = 没有代理地址 = 无法交易。
+   *
+   * 这里**也要把签名地址的余额读出来**：没开过户的人几乎必然还没存款，
+   * 而他的钱就在签名地址上。只说「无法下单」而不给他看自己的钱，
+   * 等于把他最关心的问题略过了。
+   *
+   * 开户只能在 polymarket.com 完成 —— 地址由工厂合约按不公开的 salt 规则推导，
+   * 本地算不出来。
+   */
+  if (proxy.status === 'no-account') {
     return (
       <Panel title="钱包">
         <div className="space-y-2">
           <Row label="签名地址" value={shortAddr(address)} mono />
+          {inEoa != null && inEoa > 0n && (
+            <Row label="签名地址 USDC.e" value={`$${formatUsd(inEoa)}`} mono />
+          )}
         </div>
         <p className="mt-2 text-[10px] leading-snug text-warning">
-          这个地址还没在 Polymarket 开户，因此没有代理钱包，无法下单。
-          请先到 polymarket.com 用同一个钱包存一次款，代理地址会自动创建。
+          这个地址还没在 Polymarket 开户，因此没有代理钱包，也无法下单。
+          到 <PolymarketLink>polymarket.com</PolymarketLink> 用同一个钱包存一次款，
+          代理钱包和交易账户会一并建好。
         </p>
       </Panel>
     )
@@ -268,7 +288,7 @@ export function WalletPanel() {
           value={
             proxy.isLoading
               ? '查询中…'
-              : proxy.data?.status === 'error'
+              : proxy.status === 'error'
                 ? '查询失败'
                 : shortAddr(proxyAddr)
           }
@@ -277,31 +297,144 @@ export function WalletPanel() {
         />
         <div className="h-px bg-border" />
         <Row
-          label="USDC.e"
+          label="可交易 pUSD"
           value={
-            proxy.isLoading || usdc.isLoading
+            proxy.isLoading || bal.trading.isLoading
               ? '读取中…'
               : proxyAddr
-                ? `$${fmtUnits(usdc.data, 6, 2)}`
+                ? `$${formatUsd(inProxy)}`
                 : '—'
           }
           mono
+          hint="代理钱包里的，下单用这个"
         />
+        {/* 签名地址有余额才显示：没存款时这一行就是那个「我的钱去哪了」的答案 */}
+        {inEoa != null && inEoa > 0n && (
+          <Row
+            label="签名地址 USDC.e"
+            value={`$${formatUsd(inEoa)}`}
+            mono
+            hint="还没存款"
+          />
+        )}
+        {inNative != null && inNative > 0n && (
+          <Row
+            label="签名地址 USDC"
+            value={`$${formatUsd(inNative)}`}
+            mono
+            hint="官方存款流程能收"
+          />
+        )}
+        <div className="h-px bg-border" />
         <Row
           label="POL（gas）"
-          value={
-            native.isLoading
-              ? '读取中…'
-              : fmtUnits(native.data?.value, native.data?.decimals ?? 18, 4)
-          }
+          value={bal.pol.isLoading ? '读取中…' : formatPol(bal.pol.data?.value)}
           mono
         />
       </div>
+
+      {/*
+        入金入口：去官网，不自己做。
+        pUSD 是 Polymarket 那边链上 mint 出来的（ERC-4337 UserOp），
+        一笔 ERC-20 转账变不出 mint —— 见 lib/money.ts 顶部。而官方流程免 gas，
+        实测 POL 为 0 也能存进去，比自己做既正确又省事。
+      */}
+      <PolymarketLink variant="button" className="mt-2.5">
+        去 Polymarket 存款
+      </PolymarketLink>
+
+      {/* 交易授权那只一半留着：它走 SDK 的 relayer，是正确且唯一可行的做法。
+          按钮本身不碰 SDK，点开才 lazy 加载那个弹窗。 */}
+      <button
+        type="button"
+        onClick={() => setApprovalsOpen(true)}
+        disabled={!proxyAddr}
+        className="mt-1.5 w-full rounded-md border border-border px-2 py-1.5 text-[11px] font-medium text-foreground hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+      >
+        交易授权
+      </button>
+
+      {/* 还没存款。**这条是面板上最重要的一句话** —— 它解释的正是「钱读不出来」
+          这个看起来像 bug 的现象，而它其实只是还差一步存款。 */}
+      {notDeposited && (
+        <p className="mt-2 rounded border border-warning/30 bg-warning/10 p-2 text-[10px] leading-snug text-warning">
+          钱在<span className="font-semibold">签名地址</span>上（$
+          {formatUsd(inEoa)}），还没进 Polymarket
+          的代理钱包，所以「可交易 pUSD」是 $0.00 —— 不是读错了，是还差一步存款。
+          这一步得在官网做（
+          <PolymarketLink>polymarket.com</PolymarketLink>
+          ），存款会铸出交易用的 pUSD；本项目做不了这件事，也不该假装能做。
+        </p>
+      )}
+
+      {/* 原生 USDC 与 USDC.e 的区分保留：官方的存款流程两种都收，
+          但站内不要再暗示「自己转一笔就行」—— 那条路已经拆了。 */}
+      {wrongToken && (
+        <p className="mt-2 rounded border border-warning/30 bg-warning/10 p-2 text-[10px] leading-snug text-warning">
+          签名地址上是 ${formatUsd(inNative)} <span className="font-semibold">原生 USDC</span>，
+          不是 USDC.e。这不影响存款 —— 官方的存款流程两种都收，也会把该换的换掉。
+          直接走上面的入口就行。
+        </p>
+      )}
+
       <p className="mt-2 text-[10px] leading-snug text-muted-foreground">
-        USDC.e 读的是<span className="text-foreground">代理钱包</span>——Polymarket
-        把资金放在那里，读 EOA 会永远显示 $0。gas 从签名地址出。
+        「可交易 pUSD」读的是<span className="text-foreground">代理钱包</span>——
+        Polymarket 把交易资金放在那里，读签名地址会永远显示 $0。
+        pUSD 是 Polymarket 的抵押代币，由官方存款流程铸造。gas 从签名地址出。
       </p>
+
+      {approvalsOpen && (
+        <Suspense fallback={null}>
+          <ApprovalsDialog onClose={() => setApprovalsOpen(false)} />
+        </Suspense>
+      )}
     </Panel>
+  )
+}
+
+/**
+ * 去 Polymarket 官网的链接。三处会把人支使过去（没开户、还没存款、代币不对），
+ * 措辞各不相同但去处是同一个 —— 写三遍的话，改 URL 时漏一处不会有任何提示。
+ *
+ * ## 为什么是根地址，不是 /deposit 之类的深链
+ *
+ * 猜一个看起来合理的深链，猜错了就是 404 —— 那比让人多点一次导航还糟，
+ * 而且坏掉的时候没人会发现（只有真去点才会暴露）。根地址永远能用。
+ *
+ * ## 为什么要 variant，而不是让调用点传 className 覆盖
+ *
+ * `lib/utils.ts` 的 `cn` 只是把字符串拼起来，**不做同类冲突仲裁**（没装
+ * tailwind-merge）。传 className 去覆盖 `underline` 这类类名，结果会是两个
+ * 类同时留在元素上，谁赢取决于 Tailwind 产出样式的顺序 —— 那种胜负读代码
+ * 看不出来，改一次 Tailwind 版本就可能翻过来。所以两套样式各自写全，各用各的。
+ */
+const LINK_VARIANTS = {
+  /** 夹在正文里的一句话链接 */
+  inline: 'font-medium text-primary underline underline-offset-2 hover:opacity-80',
+  /** 整行的按钮。样式写全，不从 inline 那套继承任何东西 */
+  button:
+    'flex w-full items-center justify-center rounded-md border border-primary/40 bg-primary/10 px-2 py-1.5 text-[11px] font-medium text-primary hover:bg-primary/20',
+} as const
+
+function PolymarketLink({
+  children,
+  variant = 'inline',
+  className,
+}: {
+  children: React.ReactNode
+  variant?: keyof typeof LINK_VARIANTS
+  /** 只用来补外边距这类不与变体冲突的类 */
+  className?: string
+}) {
+  return (
+    <a
+      href="https://polymarket.com"
+      target="_blank"
+      rel="noreferrer"
+      className={cn(LINK_VARIANTS[variant], className)}
+    >
+      {children}
+    </a>
   )
 }
 

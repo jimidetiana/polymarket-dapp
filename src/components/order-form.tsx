@@ -24,6 +24,7 @@ import {
   toSteps,
   type TickSize,
 } from '../lib/tick'
+import { feeBreakdown, formatFeeAmount, settleOf } from '../lib/fee'
 import type { OrderKind, OrderSideName } from '../lib/clob-client'
 
 /** 与原项目同值。真正的下限还受 CLOB 的 minOrderSize 约束，由调用方传进来 */
@@ -49,6 +50,16 @@ interface Props {
   /** 某侧缺失时的兜底（WS 只有单边、或全是 Gamma 快照时） */
   fallbackPrice: number
   tick: TickSize
+  /**
+   * 展示用的手续费率（bps），**由调用方查好传进来**。
+   *
+   * 表单不自己去查：费率是全局单例（按 builder code 配，与用户无关），而这张
+   * 表单会随「换比赛 / 换侧 / 换 tick」重挂，让它各自查询等于每次重挂都发一遍
+   * 同一个请求。确认面板也要同一个数 —— 两处各查一次就有了分叉的可能。
+   *
+   * 传的是已经取过 max(maker, taker) 的那个值（见 lib/fee 的 maxBpsOf）。
+   */
+  feeBps: number
   /** 最小下单份额。CLOB 盘口给了就用它的，没给用 5 */
   minShares?: number
   /** 可用余额（USDC）。undefined = 拿不到，此时不做上限校验 */
@@ -68,6 +79,7 @@ export function OrderForm({
   bestAsk,
   fallbackPrice,
   tick,
+  feeBps,
   minShares = MIN_SHARES,
   maxAmount,
   externalPrice,
@@ -117,8 +129,26 @@ export function OrderForm({
       : price > 0
         ? Math.floor((Number(amountStr) || 0) / price)
         : 0
-  // 与 clob-client 的 usdOf 同口径：界面上显示的总额就是会发出去的数
+  // 与 clob-client 的 usdOf 同口径：这个数就是会发给交易所的 amount。
+  // ⚠️ 它是**税前**的 —— SDK 的 amount 参数文档写的是 "before market and builder
+  // taker fees"，maxSpend 才是 all-in。所以**不要**把它改成正含手续费的数：
+  // 换口径会让提交金额跟着变。面向用户的数是下面的 cost。
   const total = Math.round(size * price * 100) / 100
+
+  /**
+   * 手续费明细。费率由调用方给（已取过 maker/taker 里较高的那个，理由见
+   * lib/fee 的 maxBpsOf）。
+   *
+   * 判余额、合计那一行、按钮上的数字，全部从这里派生，不用前面的 `total` ——
+   * 那个数是发给交易所的税前金额，不是用户要付的钱。
+   */
+  const cost = feeBreakdown(size, price, feeBps)
+
+  /**
+   * 这一侧实际付/收的钱，以及合计那行的标题。买卖方向相反，所以数字和标题
+   * 一起从 settleOf 拿 —— 在下面各写一遍就会有一天挑反方向。
+   */
+  const settle = settleOf(cost, side)
 
   const pb = priceBounds(tick)
   const priceOk = type === 'market' ? price > 0 && price < 1 : isPriceValid(price, tick)
@@ -132,7 +162,13 @@ export function OrderForm({
    */
   const noMarketSide = type === 'market' && (side === 'BUY' ? bestAsk == null : bestBid == null)
 
-  const overBalance = maxAmount != null && total > maxAmount
+  // 判余额必须用**含手续费**的数：用本金判的话，本金刚好等于余额的单会通过校验，
+  // 然后因为付不出手续费被交易所拒 —— 用户在点了「确认下单」之后才知道钱不够。
+  //
+  // 只对**买入**做。卖出要的是持仓份额而不是 USDC，拿美元余额去卡卖出会把
+  // 「有份额、现金为 0」的人挡在门外（他本来卖得掉）。份额余额这里没读，
+  // 所以卖出这侧不做上限校验，超了交给交易所拒。
+  const overBalance = side === 'BUY' && maxAmount != null && cost.totalUsd > maxAmount
   const valid = size >= minShares && priceOk && !noMarketSide && !overBalance && total >= MIN_AMOUNT
 
   const error = noMarketSide
@@ -142,7 +178,9 @@ export function OrderForm({
       : size > 0 && size < minShares
         ? `最少 ${minShares} 份`
         : overBalance
-          ? `超出可用余额 $${(maxAmount ?? 0).toFixed(2)}`
+          ? feeBps > 0
+            ? `超出可用余额 $${(maxAmount ?? 0).toFixed(2)}（本金 $${cost.notionalUsd.toFixed(2)} + 手续费 ${formatFeeAmount(cost.feeUsd)}）`
+            : `超出可用余额 $${(maxAmount ?? 0).toFixed(2)}`
           : size > 0 && total < MIN_AMOUNT
             ? `总额至少 $${MIN_AMOUNT}`
             : null
@@ -339,11 +377,22 @@ export function OrderForm({
       <div className="space-y-1 rounded-md border border-border bg-background p-2.5 text-[11px]">
         <SumRow k="单价" v={formatTickPrice(price, tick)} />
         <SumRow k="份额" v={String(size)} />
-        <SumRow k="预估总额" v={`$${total.toFixed(2)}`} strong />
-        {maxAmount != null && (
+        <SumRow k="本金" v={`$${cost.notionalUsd.toFixed(2)}`} />
+        {feeBps > 0 && (
+          <SumRow k={`手续费（${cost.rateLabel}）`} v={formatFeeAmount(cost.feeUsd)} />
+        )}
+        <SumRow k={settle.label} v={`$${settle.usd.toFixed(2)}`} strong />
+        {maxAmount != null && side === 'BUY' && (
           <SumRow k="可用余额" v={`$${maxAmount.toFixed(2)}`} />
         )}
       </div>
+
+      {feeBps > 0 && (
+        <p className="text-[10px] leading-snug text-muted-foreground">
+          手续费由本平台收取（{cost.rateLabel}），已含在上面「合计」里。
+          Polymarket 官方站不收这笔钱。
+        </p>
+      )}
 
       {(error || blocked) && (
         <p className="text-[11px] leading-snug text-warning">{blocked || error}</p>
@@ -361,7 +410,7 @@ export function OrderForm({
           'disabled:cursor-not-allowed disabled:bg-muted disabled:text-muted-foreground',
         )}
       >
-        {submitting ? '提交中…' : `${side === 'BUY' ? '买入' : '卖出'} ${outcomeName} · $${total.toFixed(2)}`}
+        {submitting ? '提交中…' : `${side === 'BUY' ? '买入' : '卖出'} ${outcomeName} · $${settle.usd.toFixed(2)}`}
       </button>
     </div>
   )

@@ -14,7 +14,15 @@ import { cn } from '../lib/utils'
 import { OrderForm } from './order-form'
 import { OrderBook } from './order-book'
 import { DEFAULT_TICK, formatTickPrice, TICK_SIZES, toSteps, type TickSize } from '../lib/tick'
-import { useClob, useOrderBook, useProxyWallet, useUsdcBalance } from '../lib/use-clob'
+import { PUSD_DECIMALS } from '../lib/money'
+import { feeBreakdown, formatFeeAmount, settleOf } from '../lib/fee'
+import {
+  useBuilderFeeRates,
+  useClob,
+  useCollateralBalance,
+  useOrderBook,
+  useProxyWallet,
+} from '../lib/use-clob'
 import { explainError, type OpenOrderRow, type PlaceOutcome } from '../lib/clob-client'
 import type { Quote } from '../lib/book'
 
@@ -54,8 +62,11 @@ export function OrderDialog({
 }: Props) {
   const clob = useClob()
   const proxy = useProxyWallet()
-  const usdc = useUsdcBalance(proxy.proxyAddr)
+  const usdc = useCollateralBalance(proxy.proxyAddr)
   const depth = useOrderBook(tokenId, true)
+  // 费率在这一层查一次，往下传给表单和确认面板。两处各查一次就会出现
+  // 「表单显示 0.05%、确认面板显示别的」这种自相矛盾。
+  const { feeBps } = useBuilderFeeRates()
 
   const [phase, setPhase] = useState<'idle' | 'placing' | 'listing' | 'cancelling'>('idle')
   const [outcome, setOutcome] = useState<PlaceOutcome | null>(null)
@@ -116,7 +127,11 @@ export function OrderDialog({
   }, [depth.book?.tickSize, tickByToken, tokenId])
 
   const minShares = depth.book?.minOrderSize ?? 5
-  const balance = usdc.value != null ? Number(usdc.value) / 1e6 : undefined
+  // 唯一一处把 bigint 余额转成 number 的地方：OrderForm 的 maxAmount 是 number。
+  // 用 PUSD_DECIMALS 而不是写死 1e6 —— 这个位数目前还是推出来的（见 lib/money.ts），
+  // 万一要改，两处各写一份必然漏一处。转 number 只为了给表单做上限，
+  // 真下单的金额仍走整数（见 clob-client 的 usdOf）。
+  const balance = usdc.value != null ? Number(usdc.value) / 10 ** PUSD_DECIMALS : undefined
 
   const blockedReason = clob.readiness.ready
     ? phase !== 'idle'
@@ -268,6 +283,7 @@ export function OrderDialog({
                 <ConfirmPanel
                   pending={pending}
                   tick={tick}
+                  feeBps={feeBps}
                   busy={phase === 'placing'}
                   onBack={() => setPending(null)}
                   onConfirm={() => void doPlace(pending)}
@@ -284,6 +300,7 @@ export function OrderDialog({
                     bestAsk={bestAsk}
                     fallbackPrice={fallbackPrice}
                     tick={tick}
+                    feeBps={feeBps}
                     minShares={minShares}
                     maxAmount={balance}
                     externalPrice={picked}
@@ -419,24 +436,45 @@ export function OrderDialog({
  * 这一层不是「多点一下」的形式主义：钱包弹窗只显示要签的 EIP-712 结构，
  * 人看不懂里面的 makerAmount 是几美元。而动钱的判断要用**美元和份额**做。
  *
- * 下面那段风险提示必须留 —— 它讲的三件事都是真的且影响这笔钱：
- * 签名会多一次、这条路径在本项目里从没跑通过、上游事故的待办还没做完。
+ * ## 总额必须是税前 + 手续费
+ *
+ * `份额 × 单价` 是**税前**的数 —— SDK 的 `amount` 参数文档写的是
+ * "before market and builder taker fees"，`maxSpend` 才是 "all-in"。
+ * 把它直接标成「总额」，用户实际被扣的会比看到的多，而多的那部分正是本平台的
+ * 手续费。用户发现的方式不会是想「平台收费了」，而是「这站骗我」。
+ *
+ * 费率由调用方查好传来（`useBuilderFeeRates` 取 maker/taker 里**较高**的那个：
+ * 市价单必然是 taker；限价单挂上去成交时可能是 maker（通常更便宜），但事先不知
+ * 道会怎么成交，所以按高的报。报多了用户不会生气，报少了才是问题）。
+ *
+ * 这里**不自己查**：同一笔单的表单和确认面板必须显示同一个费率，各查一次就有了
+ * 分叉的可能 —— 而那种分叉的表现是「上一步说 0.05%，这一步说别的」。
+ *
+ * 卖出的方向是**反**的：手续费从成交额里扣，到手的是本金减去费。所以这里的
+ * 数字与标题都从 `settleOf` 按方向取，不在这一层自己拼 —— 拼错方向就是「标题
+ * 写实际扣款、数字是到账」。
+ *
+ * 下面那段风险提示必须留 —— 它讲的四件事都是真的且影响这笔钱。
  */
 function ConfirmPanel({
   pending,
   tick,
+  feeBps,
   busy,
   onBack,
   onConfirm,
 }: {
   pending: { side: string; size: number; price: number; type: string }
   tick: TickSize
+  /** 展示用的费率，bps。已由调用方取过 max(maker, taker) */
+  feeBps: number
   busy: boolean
   onBack: () => void
   onConfirm: () => void
 }) {
-  const total = Math.round(pending.size * pending.price * 100) / 100
+  const cost = feeBreakdown(pending.size, pending.price, feeBps)
   const buy = pending.side === 'BUY'
+  const settle = settleOf(cost, buy ? 'BUY' : 'SELL')
   return (
     <div className="space-y-2 rounded-lg border border-primary/40 bg-primary/5 p-3">
       <p className="text-xs font-semibold text-foreground">确认这一笔</p>
@@ -445,10 +483,22 @@ function ConfirmPanel({
         <Row k="类型" v={pending.type === 'limit' ? '限价（挂单，可能不成交）' : '市价（立即吃单）'} />
         <Row k="单价" v={`${formatTickPrice(pending.price, tick)}（${tick} 档）`} />
         <Row k="份额" v={String(pending.size)} />
-        <Row k="总额" v={`$${total.toFixed(2)}`} strong />
+        <Row k="本金" v={`$${cost.notionalUsd.toFixed(2)}`} />
+        {feeBps > 0 && (
+          <Row k={`手续费（${cost.rateLabel}）`} v={formatFeeAmount(cost.feeUsd)} />
+        )}
+        <Row k={settle.label} v={`$${settle.usd.toFixed(2)}`} strong />
       </div>
 
       <div className="space-y-1 rounded border border-warning/30 bg-warning/10 p-2 text-[10px] leading-snug text-warning">
+        {feeBps > 0 && (
+          <p>
+            · 本平台按成交额收 <span className="font-semibold">{cost.rateLabel}</span> 的手续费，
+            已含在上面「合计」里。
+            <span className="font-semibold">Polymarket 官方站不收这笔钱</span>
+            —— 觉得不值可以改用官方站下单。
+          </p>
+        )}
         <p>
           · 首次下单会先让你在钱包里签一次名，用来派生 API key（L1 消息，
           <span className="font-semibold">不上链、不花 gas</span>）。之后同一会话不再问。
