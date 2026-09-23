@@ -72,7 +72,13 @@ export interface GraphEventInput {
 }
 
 export interface BuildOptions {
-  /** 成交量下限（严格大于）。默认 0：需求要的是「有交易量的盘口」 */
+  /**
+   * 成交量下限（严格大于）。**不给就不过滤**。
+   *
+   * 原项目默认 0，因为那边的需求是「有交易量的盘口」。dapp 不能这么筛：
+   * 赛前刚挂出来的盘口成交量是 0 但已经有挂单、能下单，筛掉它图上就是
+   * 「无此盘」，而平台上明明有。能不能交易看 CLOB 的实时盘口，不看历史成交。
+   */
   minVolume?: number
   state?: MatchState
 }
@@ -236,6 +242,21 @@ function judgeGte(from: GraphNode, to: GraphNode): { violated: boolean; slack: n
 /** 判 P(from) ≤ P(to)，即 judgeGte 反向 */
 function judgeLte(from: GraphNode, to: GraphNode): { violated: boolean; slack: number | null } {
   return judgeGte(to, from)
+}
+
+/**
+ * 节点给 λ 反推用的概率样本。
+ *
+ * 零成交且没有实时报价的节点给 null：它的 Gamma 快照价不是任何人成交过的
+ * 价，多半是挂盘时的默认值，拿它反推 λ 会把整张图的进球幅度带偏。等 CLOB
+ * 回了书（quoted）再用它的买卖价 —— 那才是市场的意见。
+ */
+function lambdaSampleOf(n: GraphNode): LambdaSample {
+  const s = sideOf(n)
+  if (n.volume <= 0 && !s?.quoted) return { desc: n.desc, prob: null }
+  const b = bidOf(n)
+  const a = askOf(n)
+  return { desc: n.desc, prob: b != null && a != null ? (b + a) / 2 : (b ?? a) }
 }
 
 function edge(
@@ -520,7 +541,7 @@ function buildPartitionGroups(nodes: GraphNode[]): GraphGroup[] {
 /**
  * 建图。纯函数：不读库、不发请求，价格由调用方喂进来。
  *
- * minVolume 默认 0（严格大于）：需求明确要「有交易量的盘口」。
+ * 成交量过滤是可选的（见 BuildOptions.minVolume），默认全收。
  * 认不出的问句直接丢弃，不塞成 other 再连出错误的约束边。
  */
 export function buildMarketGraph(
@@ -528,12 +549,12 @@ export function buildMarketGraph(
   markets: GraphMarketInput[],
   opts: BuildOptions = {},
 ): MarketGraph {
-  const minVolume = opts.minVolume ?? 0
+  const minVolume = opts.minVolume
   const state = opts.state ?? PRE_MATCH
 
   const kept: Array<{ m: GraphMarketInput; desc: MarketDescriptor }> = []
   for (const m of markets) {
-    if (num(m.volume) <= minVolume) continue
+    if (minVolume != null && num(m.volume) <= minVolume) continue
     const desc = parseMarket({
       questionEn: m.questionEn,
       questionZh: m.questionZh,
@@ -582,15 +603,7 @@ export function buildMarketGraph(
   })
 
   // λ 从盘口报价反推，再回填每个节点的进球影响
-  const samples: LambdaSample[] = nodes.map((n) => ({
-    desc: n.desc,
-    prob: (() => {
-      const b = bidOf(n)
-      const a = askOf(n)
-      if (b != null && a != null) return (b + a) / 2
-      return b ?? a
-    })(),
-  }))
+  const samples = nodes.map(lambdaSampleOf)
   const lam: Lambdas | null = inferLambdas(samples, state)
   for (const n of nodes) {
     n.impact = goalImpact(n.desc, lam, state)
@@ -631,7 +644,7 @@ export function buildMarketGraph(
     columns,
     stats: {
       markets: markets.length,
-      withVolume: nodes.length,
+      withVolume: nodes.filter((n) => n.volume > 0).length,
       goalSensitive: nodes.filter((n) => n.desc.goalSensitive).length,
       edges: edges.length,
       violations: edges.filter((e) => e.violated).length + groups.filter((g) => g.violated).length,
@@ -661,15 +674,7 @@ export function applyLivePrices(
     }
   }
 
-  const samples: LambdaSample[] = graph.nodes.map((n) => ({
-    desc: n.desc,
-    prob: (() => {
-      const b = bidOf(n)
-      const a = askOf(n)
-      if (b != null && a != null) return (b + a) / 2
-      return b ?? a
-    })(),
-  }))
+  const samples = graph.nodes.map(lambdaSampleOf)
   const lam = inferLambdas(samples, state)
   for (const n of graph.nodes) {
     n.impact = goalImpact(n.desc, lam, state)

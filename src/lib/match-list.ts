@@ -54,31 +54,6 @@ export const STATUS_CLASS: Record<MatchStatus, string> = {
 }
 
 /**
- * 一场比赛的总成交额：各盘口 volume 之和。
- *
- * 求和是安全的 —— mergeIntoMatches 已按 market id 去过重，同一盘口不会算两次。
- * 也不用 Gamma 的 event.volume：一场比赛是多个 event 合并来的（见 gamma.ts），
- * 而 SoccerMatch 没留着那批 event。
- *
- * **全都拿不到时返回 null 而不是 0**：盘口真的零成交，和接口没给这个字段，
- * 是两件不同的事。lib/utils 的 formatVolume 对 null 显示「—」、对 0 显示「$0」，
- * 这里把两者分开，那个区分才有意义。
- */
-export function matchVolume(m: SoccerMatch): number | null {
-  let total = 0
-  let seen = false
-  for (const mk of m.markets) {
-    const raw = mk.volume
-    if (raw === null || raw === undefined || raw === '') continue
-    const v = Number(raw)
-    if (!Number.isFinite(v)) continue
-    total += v
-    seen = true
-  }
-  return seen ? total : null
-}
-
-/**
  * 搜索用的一整串文本：中英文队名 + 联赛中英文名 + 英文标题。
  *
  * 中译名走 translateTeam，和 dict-admin 的表格同一条路。**副作用是想要的**：

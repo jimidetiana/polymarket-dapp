@@ -48,16 +48,33 @@ const yesNo = (questionEn: string, extra: Partial<GraphMarketInput> = {}) =>
 
 // ==================== 节点 ====================
 
-test('只收有交易量的盘口，认不出的问句不进图', () => {
+test('零成交的盘口也进图，认不出的问句不进图', () => {
   const g = buildMarketGraph(EVENT, [
     ou(2.5),
     ou(1.5, { volume: 0 }),
     mk({ questionEn: 'Who will referee the match?', volume: 500 }),
   ])
-  assert.equal(g.nodes.length, 1)
-  assert.equal(g.nodes[0].desc.line, 2.5)
+  assert.deepEqual(
+    g.nodes.map((n) => n.desc.line),
+    [2.5, 1.5],
+  )
   assert.equal(g.stats.markets, 3)
   assert.equal(g.stats.withVolume, 1)
+})
+
+test('给了 minVolume 才按成交量过滤', () => {
+  const g = buildMarketGraph(EVENT, [ou(2.5), ou(1.5, { volume: 0 })], { minVolume: 0 })
+  assert.equal(g.nodes.length, 1)
+  assert.equal(g.nodes[0].desc.line, 2.5)
+})
+
+test('零成交盘口的快照价不参与 λ 反推，收到实时报价后才算', () => {
+  // 只有一条零成交的 2.5 线，快照价 0.5：没有实时报价时不该反推出 λ
+  const g = buildMarketGraph(EVENT, [ou(2.5, { volume: 0, outcomePrices: ['0.5', '0.5'] })])
+  assert.equal(g.lambdaTotal, null)
+  const over = g.nodes[0].sides[0].tokenId as string
+  const live = applyLivePrices(g, { [over]: { bid: 0.44, ask: 0.46 } })
+  assert.ok(live.lambdaTotal != null && live.lambdaTotal > 0)
 })
 
 test('列分配：角球与总进球不同列，单队与全场不同列', () => {

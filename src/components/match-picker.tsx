@@ -30,7 +30,6 @@ import {
   countStatuses,
   filterMatches,
   matchStatus,
-  matchVolume,
   searchMatches,
   type MatchFilter,
 } from '../lib/match-list'
@@ -91,7 +90,7 @@ export function MatchPicker({
           {empty
             ? '（无比赛）'
             : current
-              ? `${translateTeam(current.home)} vs ${translateTeam(current.away)}（${current.markets.length} 盘口）`
+              ? `${translateTeam(current.home)} vs ${translateTeam(current.away)}（${current.eventIds.length} 个子赛事）`
               : '选一场比赛'}
         </span>
         <span className="shrink-0 text-muted-foreground">▾</span>
@@ -167,8 +166,12 @@ export function MatchPicker({
 
 /**
  * 一场比赛一行。原项目那张卡片的简化版：去掉关注星标（dapp 没有关注列表）、
- * 去掉右箭头（这里点哪行都是同一个动作），加了盘口数 —— 关系图能画多完整
- * 全看盘口数，那是这一页最该看的一个数。
+ * 去掉右箭头（这里点哪行都是同一个动作），加了子赛事数 —— 关系图能画多完整
+ * 全看盘口族多不多，那是这一页最该看的一个数。
+ *
+ * 显示的是子赛事数而不是盘口数：列表是不带盘口拉的（gamma.ts 的
+ * fetchSoccerEvents 解释了为什么），盘口数只有选中那场才知道。一族盘口对应
+ * 一个子赛事，所以子赛事数是同一件事的粗刻度：1 = 只有胜平负，7 = 全套。
  */
 function MatchRow({
   match,
@@ -184,7 +187,7 @@ function MatchRow({
   // 至少有一条译名才显示英文副行；两条都没译时那一行只是把上面重复一遍
   const hasEn = homeZh !== match.home || awayZh !== match.away
   const status = matchStatus(match.endDate)
-  const vol = matchVolume(match)
+  const vol = match.volume
 
   return (
     <button
@@ -219,7 +222,7 @@ function MatchRow({
           >
             {STATUS_LABEL[status]}
           </span>
-          <span className="tnum text-[10px] text-muted-foreground">{match.markets.length} 盘口</span>
+          <span className="tnum text-[10px] text-muted-foreground">{match.eventIds.length} 个子赛事</span>
         </div>
       </div>
     </button>

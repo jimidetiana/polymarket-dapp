@@ -33,6 +33,7 @@ import { translateLeague } from './lib/dict'
 import { formatTickPrice, DEFAULT_TICK } from './lib/tick'
 import { cn } from './lib/utils'
 import type { ConnState } from './lib/clob-ws'
+import type { GraphSide } from './graph/types'
 
 /**
  * 词典维护页面，**只在开发时打包**。
@@ -84,6 +85,13 @@ function GraphPage() {
   const [selectedKey, setSelectedKey] = useState<string | null>(null)
   /** 选中的盘口槽位 key。**关掉弹窗不清它** —— 侧栏还要显示这个盘口 */
   const [pickedKey, setPickedKey] = useState<string | null>(null)
+  /**
+   * 在弹窗里切到的那一侧的名字（Under / No / 某队）。null = 槽位自己的那一侧。
+   *
+   * 单独存而不是并进 pickedKey：槽位只代表盘口的**一侧** —— 总进球 2.5 是 Over
+   * 侧、主胜是 Yes 侧，Under / No 在图上没有槽位，只能从节点的 sides 里找。
+   */
+  const [pickedSideName, setPickedSideName] = useState<string | null>(null)
   /** 弹窗开关。与 pickedKey 分开：关掉弹窗不该丢掉「刚才看的是哪个盘口」 */
   const [orderOpen, setOrderOpen] = useState(false)
 
@@ -93,8 +101,19 @@ function GraphPage() {
   }, [matches, matchId])
 
   const match = matches.find((m) => m.id === matchId) ?? null
-  const { graph, slots, goals, prevPrices, wsState, quotedCount, book, tickByToken } =
-    useMarketGraph(match)
+  const {
+    graph,
+    marketsLoading,
+    marketsError,
+    reloadMarkets,
+    slots,
+    goals,
+    prevPrices,
+    wsState,
+    quotedCount,
+    book,
+    tickByToken,
+  } = useMarketGraph(match)
 
   /**
    * 存的是**槽位的 key，不是槽位对象**。
@@ -105,22 +124,34 @@ function GraphPage() {
    */
   const picked = useMemo(() => slots.find((s) => s.key === pickedKey) ?? null, [slots, pickedKey])
 
-  /**
-   * 同一张盘口的可下单侧，给弹窗做 Over/Under 切换。
-   *
-   * 按 nodeId 找兄弟槽位而不是存两侧 token：画布点的是「哪个节点、哪一侧」，
-   * 换侧要重新取的是那一侧的 token 与报价 —— 只有 slots 拿得到全部两侧。
-   */
-  const pickedSides = useMemo(() => {
-    if (!picked?.nodeId) return []
-    return slots
-      .filter((s) => s.nodeId === picked.nodeId && s.tokenId)
-      .map((s) => ({ name: s.sideName ?? s.label, tokenId: s.tokenId as string }))
-  }, [picked, slots])
-
   const pickedNode = useMemo(
     () => (picked?.nodeId ? (graph?.nodes.find((n) => n.id === picked.nodeId) ?? null) : null),
     [graph, picked],
+  )
+
+  /**
+   * 真正要下单的那一侧。默认是槽位自己的那一侧（总进球 2.5 → Over，主胜 → Yes），
+   * 在弹窗里切过就是另一侧 —— token、报价、tick 都从这一侧取，不从槽位取。
+   */
+  const pickedSide = useMemo(() => {
+    if (!pickedNode || !picked) return null
+    const sides = pickedNode.sides.filter((s) => s.tokenId)
+    return sides.find((s) => s.name === pickedSideName) ?? sides.find((s) => s.tokenId === picked.tokenId) ?? null
+  }, [pickedNode, picked, pickedSideName])
+
+  /**
+   * 同一张盘口的可下单侧，给弹窗做 Over/Under、Yes/No 切换。
+   *
+   * 从节点的 sides 取，**不从兄弟槽位取**：大小球和胜平负每张盘只有一个槽位
+   * （另一侧不在图上），按槽位找永远只有一侧，切换按钮就不会出现。这就是
+   * 原来点进去只能买 Over / Yes 的原因。让球盘两侧各有槽位，两种取法一样。
+   */
+  const pickedSides = useMemo(
+    () =>
+      (pickedNode?.sides ?? [])
+        .filter((s) => s.tokenId)
+        .map((s) => ({ name: s.name, tokenId: s.tokenId as string })),
+    [pickedNode],
   )
 
   return (
@@ -148,6 +179,7 @@ function GraphPage() {
               setMatchId(id)
               setSelectedKey(null)
               setPickedKey(null)
+              setPickedSideName(null)
               setOrderOpen(false)
             }}
           />
@@ -219,10 +251,25 @@ function GraphPage() {
               selectedKey={selectedKey}
               onSelect={setSelectedKey}
               onBuy={(s) => {
+                // 点节点永远从槽位自己的那一侧开始；上一次在弹窗里切的侧不带过来
                 setPickedKey(s.key)
+                setPickedSideName(null)
                 setOrderOpen(true)
               }}
             />
+          ) : marketsLoading ? (
+            <Centered>正在拉取盘口…</Centered>
+          ) : marketsError ? (
+            <Centered>
+              <p className="text-sm text-warning">{marketsError}</p>
+              <button
+                type="button"
+                onClick={reloadMarkets}
+                className="rounded-md border border-border px-2.5 py-1 text-[11px] text-foreground/80 hover:bg-muted"
+              >
+                重试
+              </button>
+            </Centered>
           ) : (
             <Centered>选一场比赛</Centered>
           )}
@@ -237,7 +284,7 @@ function GraphPage() {
             <Panel title="本场">
               <div className="space-y-1.5 text-xs">
                 <LeagueRow code={match.leagueCode} icon={match.leagueIcon} />
-                <KV k="盘口" v={`${match.markets.length}（${match.sources.length} 个子赛事）`} />
+                <KV k="盘口" v={`${graph.stats.markets}（${match.sources.length} 个子赛事）`} />
                 <KV k="节点 / 边" v={`${graph.nodes.length} / ${graph.edges.length}`} />
                 <KV k="划分组" v={String(graph.groups.length)} />
                 <KV
@@ -257,20 +304,18 @@ function GraphPage() {
           <WalletPanel />
 
           <Panel title="订单">
-            {pickedNode && picked ? (
+            {pickedNode && picked && pickedSide?.tokenId ? (
               <div className="space-y-1.5 text-xs">
                 <KV k="盘口" v={picked.label} />
-                <KV k="方向" v={picked.sideName ?? '—'} />
+                <KV k="方向" v={pickedSide.name} />
                 <KV
                   k="现价"
                   v={`${formatTickPrice(
-                    picked.price,
-                    tickByToken[picked.tokenId ?? ''] ?? DEFAULT_TICK,
-                  )}${
-                    tickByToken[picked.tokenId ?? ''] === '0.001' ? '（0.001 档）' : ''
-                  }`}
+                    sideMid(pickedSide),
+                    tickByToken[pickedSide.tokenId] ?? DEFAULT_TICK,
+                  )}${tickByToken[pickedSide.tokenId] === '0.001' ? '（0.001 档）' : ''}`}
                 />
-                <KV k="报价" v={picked.quoted ? '实时双边盘' : '快照（上一次成交价）'} />
+                <KV k="报价" v={pickedSide.quoted ? '实时双边盘' : '快照（上一次成交价）'} />
                 <button
                   type="button"
                   onClick={() => setOrderOpen(true)}
@@ -288,8 +333,8 @@ function GraphPage() {
 
       {/* 下单弹窗。挂在页面根上而不是节点 onClick 那一刻就地展开：
           弹窗要跨「换侧」存活，而 onBuy 只在点击瞬间给得出数据。
-          换侧只改 pickedKey，剩下的（token、报价、tick）都由 slots 重新推出来。 */}
-      {orderOpen && picked && picked.tokenId && pickedNode && graph && (
+          换侧只改 pickedSideName，剩下的（token、报价、tick）都由节点的那一侧重新推出来。 */}
+      {orderOpen && picked && pickedNode && pickedSide?.tokenId && graph && (
         <Suspense
           fallback={
             <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/70 p-3 text-sm text-muted-foreground backdrop-blur-sm">
@@ -298,13 +343,17 @@ function GraphPage() {
           }
         >
           <OrderDialog
-            tokenId={picked.tokenId}
-            sideName={picked.sideName ?? picked.label}
-            marketLabel={picked.label}
+            tokenId={pickedSide.tokenId}
+            sideName={pickedSide.name}
+            // 带上侧名：切到 Under 之后光看「总进球 2.5」分不出买的是哪一边
+            marketLabel={`${picked.label} · ${pickedSide.name}`}
             marketQuestion={pickedNode.questionZh || pickedNode.questionEn || pickedNode.desc.label}
             eventTitle={graph.title}
             sides={pickedSides}
             onSelectSide={(s) => {
+              setPickedSideName(s.name)
+              // 让球盘的另一侧在图上也有槽位（主队 -1.5 ↔ 客队 +1.5），
+              // 选中跟着挪过去，画布高亮和侧栏才不会还停在原来那侧
               const hit = slots.find((x) => x.tokenId === s.tokenId)
               if (hit) setPickedKey(hit.key)
             }}
@@ -334,6 +383,12 @@ function KV({ k, v }: { k: string; v: string }) {
       <span className="truncate text-right font-mono text-foreground">{v}</span>
     </div>
   )
+}
+
+/** 一侧的中价；只有单边时用那一边，都没有退回 Gamma 快照价。与 resolveTemplate 给槽位算 price 的规则一致 */
+function sideMid(s: GraphSide): number | null {
+  if (s.bid != null && s.ask != null) return (s.bid + s.ask) / 2
+  return s.bid ?? s.ask ?? s.price
 }
 
 /**

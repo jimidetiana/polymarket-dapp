@@ -119,15 +119,17 @@ export async function fetchBook(assetId: string) {
  *
  * ## 字段名要对一遍
  *
- * SDK 返回的是 `{ builderCode, makerFeeRateBps, takerFeeRateBps }`，与我们
+ * SDK 0.10.0 的返回体经 zod 转换后是 `{ maker, taker }`（接口原始字段是
+ * `builder_maker_fee_rate_bps` / `builder_taker_fee_rate_bps`），与我们
  * lib/fee.ts 的 `{ makerBps, takerBps }` **不同名**。在这一层对上，别让 SDK 的
- * 命名渗进界面代码。
+ * 命名渗进界面代码。读错字段名会得到 `Number(undefined)` = NaN，界面上就是
+ * 「手续费 NaN」—— tsc 能抓住这个，所以字段名不要用 any 绕过去。
  */
 export async function fetchFeeRates(): Promise<{ makerBps: number; takerBps: number } | null> {
   const code = builderCode()
   if (!code) return null
   const r = await fetchBuilderFeeRates(publicClient, { builderCode: code })
-  return { makerBps: Number(r.makerFeeRateBps), takerBps: Number(r.takerFeeRateBps) }
+  return { makerBps: Number(r.maker), takerBps: Number(r.taker) }
 }
 
 // ── 已认证客户端（每个 签名地址+账户钱包 组合一个）────────────

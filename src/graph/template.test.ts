@@ -14,7 +14,6 @@ import {
   resolveTemplate,
   TEMPLATE_EDGES,
   TEMPLATE_SLOTS,
-  TEMPLATE_VIEWBOX,
 } from './template.js'
 
 const EVENT = {
@@ -69,11 +68,11 @@ const NO_GOALS = { total: null, home: null, away: null }
 
 // ==================== 模板本身 ====================
 
-test('22 个槽位、22 条边，与设计稿一致', () => {
-  assert.equal(TEMPLATE_SLOTS.length, 22)
-  assert.equal(TEMPLATE_EDGES.length, 22)
+test('26 个槽位、26 条边：设计稿的 22 + 后补的 4', () => {
+  assert.equal(TEMPLATE_SLOTS.length, 26)
+  assert.equal(TEMPLATE_EDGES.length, 26)
   assert.equal(TEMPLATE_SLOTS.filter((s) => s.kind === 'goals').length, 3)
-  assert.equal(TEMPLATE_SLOTS.filter((s) => s.kind === 'market').length, 19)
+  assert.equal(TEMPLATE_SLOTS.filter((s) => s.kind === 'market').length, 23)
 })
 
 test('槽位 key 唯一，边只引用存在的 key', () => {
@@ -85,10 +84,24 @@ test('槽位 key 唯一，边只引用存在的 key', () => {
   }
 })
 
-test('所有槽位都落在画布内', () => {
-  for (const s of TEMPLATE_SLOTS) {
-    assert.ok(s.x > 0 && s.x < TEMPLATE_VIEWBOX.width, `${s.key} x 越界`)
-    assert.ok(s.y > 0 && s.y < TEMPLATE_VIEWBOX.height, `${s.key} y 越界`)
+test('后补的 4 个槽位沿各自梯子的方向延伸', () => {
+  const at = (k: string) => TEMPLATE_SLOTS.find((s) => s.key === k)!
+  // 全场梯子自下而上、左右交替：4.5 在 3.5 上方且回到 2.5 那一列，5.5 再上去回到 3.5 那一列
+  assert.ok(at('total_4.5').y < at('total_3.5').y)
+  assert.ok(at('total_5.5').y < at('total_4.5').y)
+  assert.equal(at('total_4.5').x, at('total_2.5').x)
+  assert.equal(at('total_5.5').x, at('total_3.5').x)
+  // 两翼继续向外上方：主队往左上，客队往右上
+  assert.ok(at('home_2.5').x < at('home_1.5').x && at('home_2.5').y < at('home_1.5').y)
+  assert.ok(at('away_2.5').x > at('away_1.5').x && at('away_2.5').y < at('away_1.5').y)
+  // 四个都是全场进球大小盘的 Over 侧
+  for (const [k, subject, line] of [
+    ['total_4.5', 'match', 4.5],
+    ['total_5.5', 'match', 5.5],
+    ['home_2.5', 'home', 2.5],
+    ['away_2.5', 'away', 2.5],
+  ] as const) {
+    assert.deepEqual(at(k).bind, { family: 'ou', period: 'ft', subject, line, side: 'over' })
   }
 })
 
@@ -103,10 +116,10 @@ test('中心三节点是 goals 类型且不绑盘口', () => {
 
 // ==================== 缺盘口时槽位保留 ====================
 
-test('比赛没挂任何盘口时，22 个槽位仍在原位，只是 nodeId 为空', () => {
+test('比赛没挂任何盘口时，26 个槽位仍在原位，只是 nodeId 为空', () => {
   const g = buildMarketGraph(EVENT, [])
   const slots = resolveTemplate(g, NO_GOALS)
-  assert.equal(slots.length, 22)
+  assert.equal(slots.length, 26)
   for (const s of slots.filter((x) => x.kind === 'market')) {
     assert.equal(s.nodeId, null)
     assert.equal(s.price, null)
@@ -118,10 +131,10 @@ test('比赛没挂任何盘口时，22 个槽位仍在原位，只是 nodeId 为
 
 // ==================== 大小球绑定 ====================
 
-test('全场大小球四档各绑各的线，取 Over 侧', () => {
-  const g = buildMarketGraph(EVENT, [ou(0.5), ou(1.5), ou(2.5), ou(3.5)])
+test('全场大小球六档各绑各的线，取 Over 侧', () => {
+  const g = buildMarketGraph(EVENT, [ou(0.5), ou(1.5), ou(2.5), ou(3.5), ou(4.5), ou(5.5)])
   const slots = resolveTemplate(g, NO_GOALS)
-  for (const line of [0.5, 1.5, 2.5, 3.5]) {
+  for (const line of [0.5, 1.5, 2.5, 3.5, 4.5, 5.5]) {
     const s = slots.find((x) => x.key === `total_${line}`)!
     assert.ok(s.nodeId, `total_${line} 应绑到盘口`)
     assert.equal(s.sideName, 'Over')

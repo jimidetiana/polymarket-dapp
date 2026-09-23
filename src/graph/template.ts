@@ -15,7 +15,7 @@
  *
  *   goals   中间三个（进球 / 主队进球 / 客队进球）——**没有对应盘口**，
  *           显示由盘口反推出的进球数（见 inferGoalCounts）。
- *   market  其余 19 个，各绑一个真实盘口的**某一侧**，显示该侧价格。
+ *   market  其余 23 个，各绑一个真实盘口的**某一侧**，显示该侧价格。
  *   缺失     某场比赛没挂这条线时槽位保留但标记为空，位置不动——
  *           位置固定才是「同一套标准」的意思。
  *
@@ -56,15 +56,23 @@ export interface TemplateSlot {
   goalsOf?: 'total' | 'home' | 'away'
 }
 
-/** 设计稿的画布尺寸，前端按它设 viewBox */
-export const TEMPLATE_VIEWBOX = { width: 1334, height: 1775, nodeRadius: 56 }
-
 /**
- * 22 个槽位。坐标直接取设计稿，Y 已翻转（PDF 的 Y 向上，SVG 向下）：
+ * 26 个槽位。
+ *
+ * 前 22 个的坐标直接取设计稿，Y 已翻转（PDF 的 Y 向上，SVG 向下）：
  *   svgY = 1775 − pdfY
+ *
+ * 后加的 4 个（总进球 4.5 / 5.5、主客队总进球 2.5）不在设计稿里，按各自梯子
+ * **最后一步的向量再走一步**推出来，所以会落到设计稿 1334×1775 的框外
+ * （y 为负、x 越界）。这无妨：排布时 lib/layout.ts 把全部坐标归一到容器，
+ * 只有相对位置有意义。
  */
 export const TEMPLATE_SLOTS: TemplateSlot[] = [
-  // ---- 全场大小球梯子（图的上半）----
+  // ---- 全场大小球梯子（图的上半），自下而上左右交替 ----
+  { key: 'total_5.5', label: '总进球 5.5', kind: 'market', x: 813, y: -300,
+    bind: { family: 'ou', period: 'ft', subject: 'match', line: 5.5, side: 'over' } },
+  { key: 'total_4.5', label: '总进球 4.5', kind: 'market', x: 552, y: -94,
+    bind: { family: 'ou', period: 'ft', subject: 'match', line: 4.5, side: 'over' } },
   { key: 'total_3.5', label: '总进球 3.5', kind: 'market', x: 813, y: 112,
     bind: { family: 'ou', period: 'ft', subject: 'match', line: 3.5, side: 'over' } },
   { key: 'total_2.5', label: '总进球 2.5', kind: 'market', x: 552, y: 318,
@@ -74,7 +82,11 @@ export const TEMPLATE_SLOTS: TemplateSlot[] = [
   { key: 'total_0.5', label: '总进球 0.5', kind: 'market', x: 552, y: 626,
     bind: { family: 'ou', period: 'ft', subject: 'match', line: 0.5, side: 'over' } },
 
-  // ---- 单队大小球（两翼）----
+  // ---- 单队大小球（两翼），从中心向外上方延伸 ----
+  { key: 'home_2.5', label: '主队总进球 2.5', kind: 'market', x: -93, y: 671,
+    bind: { family: 'ou', period: 'ft', subject: 'home', line: 2.5, side: 'over' } },
+  { key: 'away_2.5', label: '客队总进球 2.5', kind: 'market', x: 1419, y: 709,
+    bind: { family: 'ou', period: 'ft', subject: 'away', line: 2.5, side: 'over' } },
   { key: 'home_1.5', label: '主队总进球 1.5', kind: 'market', x: 112, y: 799,
     bind: { family: 'ou', period: 'ft', subject: 'home', line: 1.5, side: 'over' } },
   { key: 'away_1.5', label: '客队总进球 1.5', kind: 'market', x: 1222, y: 799,
@@ -116,7 +128,7 @@ export const TEMPLATE_SLOTS: TemplateSlot[] = [
     bind: { family: 'spread', period: 'ft', subject: 'away', line: 2.5, side: 'away' } },
 ]
 
-/** 设计稿里的 22 条连线，按槽位 key */
+/** 设计稿的 22 条连线加后补的 4 条，按槽位 key */
 export const TEMPLATE_EDGES: Array<[string, string]> = [
   // 中心向两侧展开
   ['goals_total', 'goals_home'],
@@ -126,11 +138,15 @@ export const TEMPLATE_EDGES: Array<[string, string]> = [
   ['total_0.5', 'total_1.5'],
   ['total_1.5', 'total_2.5'],
   ['total_2.5', 'total_3.5'],
+  ['total_3.5', 'total_4.5'],
+  ['total_4.5', 'total_5.5'],
   // 单队进球 → 单队大小球
   ['goals_home', 'home_0.5'],
   ['home_0.5', 'home_1.5'],
+  ['home_1.5', 'home_2.5'],
   ['goals_away', 'away_0.5'],
   ['away_0.5', 'away_1.5'],
+  ['away_1.5', 'away_2.5'],
   // 单队进球 → 胜平负
   ['goals_home', 'ml_home'],
   ['goals_home', 'ml_draw'],

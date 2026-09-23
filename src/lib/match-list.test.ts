@@ -13,7 +13,6 @@ import {
   filterMatches,
   matchHaystack,
   matchStatus,
-  matchVolume,
   searchMatches,
 } from './match-list'
 
@@ -24,8 +23,9 @@ function mk(over: Partial<SoccerMatch> & { id: string; home: string; away: strin
     leagueCode: null,
     leagueIcon: null,
     endDate: null,
-    markets: [],
+    eventIds: [],
     sources: [],
+    volume: null,
     ...over,
   }
 }
@@ -127,26 +127,6 @@ test('搜索文本里中英文都在，缺译名的队也不会从搜索里消�
   assert.ok(hay.includes('everton fc'), hay)
   assert.ok(hay.includes('埃弗顿'), hay)
   assert.ok(hay.includes('狼队'), hay)
-})
-
-test('成交额：各盘口相加；拿不到就是 null 而不是 0', () => {
-  const withVol = mk({
-    id: '3',
-    home: 'A',
-    away: 'B',
-    markets: [{ id: 'm1', volume: '100' }, { id: 'm2', volume: 50 }, { id: 'm3' }],
-  })
-  assert.equal(matchVolume(withVol), 150)
-
-  // 全都拿不到 ≠ 零成交，前者显示「—」后者显示「$0」
-  const noVol = mk({ id: '4', home: 'A', away: 'B', markets: [{ id: 'm5' }] })
-  assert.equal(matchVolume(noVol), null)
-
-  const zero = mk({ id: '5', home: 'A', away: 'B', markets: [{ id: 'm6', volume: '0' }] })
-  assert.equal(matchVolume(zero), 0)
-
-  const garbage = mk({ id: '6', home: 'A', away: 'B', markets: [{ id: 'm7', volume: '—' }] })
-  assert.equal(matchVolume(garbage), null)
 })
 
 test('筛选与标签计数用同一个口径', () => {

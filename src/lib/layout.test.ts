@@ -19,7 +19,7 @@ import {
 } from './layout'
 import { TEMPLATE_SLOTS } from '../graph/template'
 
-/** 真实的 22 个槽位，只取排布需要的字段 */
+/** 真实的 26 个槽位，只取排布需要的字段 */
 const SLOTS = TEMPLATE_SLOTS.map((s) => ({ key: s.key, x: s.x, y: s.y }))
 
 /** 几种真实容器：桌面、笔记本（原来会退 width 模式的那个）、平板竖屏、手机、超宽、矮宽 */
@@ -79,13 +79,19 @@ test('半径由最小间距反推，夹在 [MIN_R, MAX_R]', () => {
 test('相对方位在所有屏幕上保持一致（同一套标准的核心）', () => {
   // 取几对有明确上下/左右关系的槽位，断言在每种容器里关系都不变
   const above: Array<[string, string]> = [
-    ['total_3.5', 'total_2.5'], // 大小球梯子自上而下
+    ['total_5.5', 'total_4.5'], // 大小球梯子自上而下
+    ['total_4.5', 'total_3.5'],
+    ['total_3.5', 'total_2.5'],
     ['total_2.5', 'total_1.5'],
+    ['home_2.5', 'home_1.5'], // 两翼向外上方
+    ['away_2.5', 'away_1.5'],
     ['goals_total', 'goals_home'], // 中心 → 单队
     ['ml_home', 'sp_home_-1.5'], // 胜平负 → 让球
     ['sp_home_-1.5', 'sp_home_-2.5'], // 让球梯子
   ]
   const leftOf: Array<[string, string]> = [
+    ['home_2.5', 'home_1.5'], // 主队梯子往左爬
+    ['away_1.5', 'away_2.5'], // 客队梯子往右爬
     ['home_1.5', 'away_1.5'], // 主队在左、客队在右
     ['goals_home', 'goals_away'],
     ['ml_home', 'ml_away'],

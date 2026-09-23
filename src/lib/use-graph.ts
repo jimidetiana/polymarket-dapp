@@ -8,10 +8,12 @@
  * 现算的代价可以接受：buildMarketGraph 是纯函数，一场比赛 85 个盘口
  * 实测 53 节点 / 62 边，耗时在毫秒级。
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { useQuery } from '@tanstack/react-query'
 import {
   GammaError,
   clobTokenIdsOf,
+  fetchMatchMarkets,
   fetchSoccerEvents,
   mergeIntoMatches,
   tickOf,
@@ -38,48 +40,47 @@ export type MatchListState = {
   reload: () => void
 }
 
-/** 拉今天+明天的足球比赛，已合并衍生赛事并按盘口数排序 */
+/**
+ * 拉今天+明天的足球比赛，已合并衍生赛事并按盘口数排序。
+ *
+ * 走 react-query 而不是裸 useEffect：比赛列表是整个应用最重的一次拉取
+ * （每页约 4 MB），而它的变化是「按赛程冒出来」的 —— 5 分钟内重复拉只会
+ * 重付同样的流量，拿回同样的结果。切到字典页再切回来也不该重拉。
+ */
 export function useSoccerMatches(): MatchListState {
-  const [matches, setMatches] = useState<SoccerMatch[]>([])
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
-  const [network, setNetwork] = useState(false)
-  const [nonce, setNonce] = useState(0)
+  const q = useQuery({
+    queryKey: ['soccer-matches'],
+    queryFn: async () => mergeIntoMatches(await fetchSoccerEvents()),
+    staleTime: 5 * 60 * 1000,
+  })
 
-  const reload = useCallback(() => setNonce((n) => n + 1), [])
+  const matches = q.data ?? EMPTY_MATCHES
+  // 重拉期间（含出错后点「重试」）按加载态显示，不把上一次的错误一直挂着
+  const loading = q.isFetching
+  const err = loading ? null : q.error
+  let error: string | null = null
+  if (err) error = err instanceof Error ? err.message : String(err)
+  // 接口通但一场都没有：多半是时间窗内确实没有比赛，不是故障
+  else if (!loading && q.isSuccess && matches.length === 0) error = '时间窗内没有进行中的足球比赛'
 
-  useEffect(() => {
-    let alive = true
-    setLoading(true)
-    setError(null)
-    fetchSoccerEvents()
-      .then((events) => {
-        if (!alive) return
-        const merged = mergeIntoMatches(events)
-        setMatches(merged)
-        setNetwork(false)
-        // 接口通但一场都没有：多半是时间窗内确实没有比赛，不是故障
-        setError(merged.length === 0 ? '时间窗内没有进行中的足球比赛' : null)
-      })
-      .catch((e: unknown) => {
-        if (!alive) return
-        setMatches([])
-        setNetwork(e instanceof GammaError ? e.likelyNetwork : false)
-        setError(e instanceof Error ? e.message : String(e))
-      })
-      .finally(() => {
-        if (alive) setLoading(false)
-      })
-    return () => {
-      alive = false
-    }
-  }, [nonce])
-
-  return { matches, loading, error, network, reload }
+  return {
+    matches,
+    loading,
+    error,
+    network: err instanceof GammaError ? err.likelyNetwork : false,
+    reload: () => void q.refetch(),
+  }
 }
+
+const EMPTY_MATCHES: SoccerMatch[] = []
 
 export type GraphState = {
   graph: MarketGraph | null
+  /** 选中比赛后那一次按 id 拉盘口还没回来。graph 为 null 时用它区分「在拉」和「没选」 */
+  marketsLoading: boolean
+  /** 盘口拉失败的文案；null = 无错 */
+  marketsError: string | null
+  reloadMarkets: () => void
   slots: ResolvedSlot[]
   goals: GoalCounts | null
   /** 上一轮的中价，key = slot.key。给画布画涨跌箭头 */
@@ -103,6 +104,12 @@ export type GraphState = {
 /**
  * 由一场比赛算出图与槽位。
  *
+ * ## 盘口在这里拉，不在列表里
+ *
+ * 列表（useSoccerMatches）是不带盘口拉的，选中哪场才拉哪场的盘口 —— 盘口查询
+ * 的范围就是「图上真正要的那一场」，而不是窗口里全部三百个赛事。按 match.id
+ * 缓存，切回看过的比赛不重拉。
+ *
  * ## 快照价 vs 实时报价
  *
  * 结构（节点、边、划分组）由 Gamma 的盘口列表建，那部分不随价格变。
@@ -117,15 +124,23 @@ export type GraphState = {
  *
  * ## 为什么分成两个 useMemo
  *
- * baseGraph 只依赖 match（换比赛才重建），liveGraph 依赖报价（每 400ms 可能变）。
- * 合成一个的话，每次报价更新都要重跑 buildMarketGraph —— 那是 85 个盘口的
- * 完整拓扑推导，没必要。applyLivePrices 只重算价格相关的部分（λ、边、违约）。
+ * baseGraph 只依赖 match 和盘口（换比赛才重建），liveGraph 依赖报价（每 400ms
+ * 可能变）。合成一个的话，每次报价更新都要重跑 buildMarketGraph —— 那是 85 个
+ * 盘口的完整拓扑推导，没必要。applyLivePrices 只重算价格相关的部分（λ、边、违约）。
  */
 export function useMarketGraph(match: SoccerMatch | null): GraphState {
   const prevRef = useRef<Record<string, number>>({})
 
+  const marketsQ = useQuery({
+    queryKey: ['match-markets', match?.id ?? null],
+    queryFn: () => fetchMatchMarkets(match?.eventIds ?? []),
+    enabled: match != null,
+    staleTime: 5 * 60 * 1000,
+  })
+  const markets = marketsQ.data ?? null
+
   const baseGraph = useMemo(() => {
-    if (!match) return null
+    if (!match || !markets) return null
     // 队名中文化在这里注入，而不是在 gamma.ts 里改 match.home/away：
     // 那两个字段要保持英文原名 —— 让球方向判断、盘口问句替换、词典查表
     // 都以英文名为键，翻过就对不上了。
@@ -148,22 +163,23 @@ export function useMarketGraph(match: SoccerMatch | null): GraphState {
     // 盘口问句也过一遍翻译：toGraphMarketInput 里 questionZh 写死 null，
     // 因为那个函数拿不到队名。队名只有在这一层才知道，所以在这里补。
     // 翻不动（译名缺失 + 术语没命中）就留 null，让 tooltip 回落英文原句。
-    const markets = match.markets.map((m) => {
+    const inputs = markets.map((m) => {
       const base = toGraphMarketInput(m)
       const zh = translateQuestion(base.questionEn, match.home, match.away)
       return { ...base, questionZh: zh && zh !== base.questionEn ? zh : null }
     })
     const minute = matchMinute(match.endDate)
-    return buildMarketGraph(event, markets, {
-      minVolume: 0,
+    // 不按成交量过滤：赛前刚挂的盘口成交量为 0 但已能下单，筛掉就成了
+    // 「无此盘」。能不能交易看 CLOB 实时盘口（quoted），不看历史成交。
+    return buildMarketGraph(event, inputs, {
       state: { homeGoals: 0, awayGoals: 0, minute },
     })
-  }, [match])
+  }, [match, markets])
 
   /**
    * 要订阅的 token 列表。
    *
-   * 从节点的每一侧收集，而不是从 match.markets —— 一个盘口有两侧（Yes/No、
+   * 从节点的每一侧收集，而不是从盘口列表 —— 一个盘口有两侧（Yes/No、
    * Over/Under），CLOB 是**按 token 订阅**的，两侧各有自己的 tokenId。
    * 只订一侧会让另一侧永远停在快照价。
    */
@@ -215,13 +231,12 @@ export function useMarketGraph(match: SoccerMatch | null): GraphState {
    */
   const tickByToken = useMemo(() => {
     const out: Record<string, TickSize> = {}
-    if (!match) return out
-    for (const m of match.markets) {
+    for (const m of markets ?? []) {
       const t = (tickOf(m) ?? DEFAULT_TICK) as TickSize
       for (const id of clobTokenIdsOf(m)) out[id] = t
     }
     return out
-  }, [match])
+  }, [markets])
 
   /**
    * 把实时报价盖到结构图上。
@@ -263,7 +278,23 @@ export function useMarketGraph(match: SoccerMatch | null): GraphState {
     prevRef.current = next
   }, [slots])
 
-  return { graph, slots, goals, prevPrices, wsState, quotedCount, book, tickByToken }
+  // 没选比赛时 query 是 disabled 的，那时 isPending 也为 true，所以要并上 match
+  const marketsLoading = match != null && marketsQ.isPending
+  const marketsError = marketsQ.error?.message ?? null
+
+  return {
+    graph,
+    marketsLoading,
+    marketsError,
+    reloadMarkets: () => void marketsQ.refetch(),
+    slots,
+    goals,
+    prevPrices,
+    wsState,
+    quotedCount,
+    book,
+    tickByToken,
+  }
 }
 
 export { TEMPLATE_EDGES }

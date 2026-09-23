@@ -176,13 +176,18 @@ export function createClobWs(opts: ClobWsOptions = {}) {
       }
       attempt = 0
       setState('open')
-      // market channel 只能在 open 时一次性订阅，不支持增量追加
+      // market channel 只能在 open 时一次性订阅，不支持增量追加。
+      //
+      // 实测（2026-09-22，probe 脚本，同一 token 各观察 12s）：`level`、
+      // `custom_feature_enabled` 对下行字节数**没有影响**，初始快照都是一条
+      // 完整深度的 book，之后的 price_change 只取决于盘中有没有成交。
+      // 所以不带 level —— 服务端不认，带着只会让人以为有「只要顶档」的开关。
+      // 想省下行流量，唯一的杠杆是**少订 token**。
       sock.send(
         JSON.stringify({
           type: 'market',
           assets_ids: tokens,
           initial_dump: true,
-          level: 2,
         }),
       )
       pingTimer = setInterval(() => {

@@ -21,8 +21,23 @@ import { leagueCodeFromImage } from './dict'
 
 const GAMMA_BASE = 'https://gamma-api.polymarket.com'
 
-/** Gamma 的 tag_id=1 是体育大类，再按 tags.slug 筛出足球 */
-const SPORTS_TAG_ID = 1
+/**
+ * 直接让 Gamma 按足球 tag 筛（`tag_slug=soccer`），不再拉整个体育大类。
+ *
+ * 实测（2026-09-22，同一 48h 窗口）：`tag_id=1` 的第一页 100 个事件里 81 个
+ * 是足球；`tag_slug=soccer` 的第一页 100/100 全是足球。
+ * `tag_id=19`（老的足球 id）已经返回空，不要用 id。
+ */
+const SOCCER_TAG_SLUG = 'soccer'
+
+/** Gamma 单页上限。实测 `limit=500` 仍只回 100 条，所以翻页不可避免 */
+const PAGE_SIZE = 100
+
+/**
+ * 兜底：48h 内的足球赛事再多也不该超过这么多页（实测 3 页）。
+ * 超过说明接口回了个怪总数，报错比照着它拉 2000 页好。
+ */
+const MAX_PAGES = 20
 
 export type GammaTag = { id?: string; slug?: string; label?: string }
 
@@ -98,9 +113,21 @@ export class GammaError extends Error {
   }
 }
 
-async function gammaGet<T>(path: string, params: Record<string, string | number | boolean>): Promise<T> {
+type GammaParam = string | number | boolean | readonly (string | number)[]
+
+/**
+ * 数组参数按**重复键**编码：`id=1&id=2&id=3`。
+ *
+ * 这是官方 SDK 对 Gamma 的编码方式（`toSnakeCaseSearchParams` 对数组逐项
+ * `append`）。**不能用逗号拼** `id=1,2,3` —— 那是 SDK 里另一套、给 CLOB/data
+ * 接口用的；Gamma 校验 `id` 是整数，看到 "1,2,3" 直接回 422。
+ */
+async function gammaGet<T>(path: string, params: Record<string, GammaParam>): Promise<T> {
   const qs = new URLSearchParams()
-  for (const [k, v] of Object.entries(params)) qs.set(k, String(v))
+  for (const [k, v] of Object.entries(params)) {
+    if (Array.isArray(v)) for (const item of v) qs.append(k, String(item))
+    else qs.set(k, String(v))
+  }
   const url = `${GAMMA_BASE}${path}?${qs}`
   let res: Response
   try {
@@ -130,58 +157,91 @@ function isSoccer(evt: GammaEvent): boolean {
 }
 
 /**
- * 拉未结束的足球赛事。
+ * 拉未结束的足球赛事 —— **只拉赛事本身，不带盘口**。
  *
  * 时间窗用北京时区的「今天+明天」：足球赛程基本按亚洲时间展示，
  * 且晚场需要提前就能看到。与原项目取同一个窗口，免得两边看到的比赛不一样。
  *
- * ## 为什么必须翻页
+ * ## 为什么不带盘口
  *
- * `tag_id=1` 是**整个体育大类**，足球只是其中一小撮 —— 这个窗口里前 100 个
- * 体育事件里只挑得出十来场足球。所以 `limit` 是「每页多少条」，不是
- * 「一共要多少条」：抓满一页就带着 offset 继续翻，直到某页不满为止。
+ * 实测（2026-09-22）一页 100 个赛事带盘口是 4 MB，光盘口的 description 一项
+ * 就占一半；而列表页只用得上标题、时间、联赛图、成交额。`include_markets=false`
+ * 让同一页缩到 470 KB。盘口在选中某场比赛时再按 id 单独拉（fetchMatchMarkets），
+ * 一场 300 KB 上下 —— 首屏从 21 MB 降到 2 MB 以内。Gamma 不认 `fields=`
+ * 之类的字段裁剪参数，这是唯一能用的开关。
  *
- * 原项目（src/soccer/fetcher.ts）就是这么翻的，上限同样是 20 页。
- * **不翻页会让比赛数量静默变少** —— 界面上完全看不出少了，只会奇怪
- * 「怎么才 11 场」。这类少数据的 bug 比报错难查得多，所以这里不能省。
+ * ## 为什么先问总数
  *
- * 中途某一页失败**直接抛**，不做「拿到多少算多少」：那等于把静默截断
- * 又做了一遍，只是换了个地方。宁可报错让人看见。
+ * `/events/pagination` 比 `/events` 多回一个 totalResults。有了总数，各页可以
+ * **并行**拉，也不必靠「某页不满」来判断结束 —— 那种判断在总数缺失时会静默
+ * 少拉。**不翻页会让比赛数量静默变少**：界面上完全看不出少了，只会奇怪
+ * 「怎么才 11 场」。这类少数据的 bug 比报错难查得多，所以总数拿不到直接抛。
+ *
+ * 中途某一页失败**直接抛**（Promise.all 的语义），不做「拿到多少算多少」：
+ * 那等于把静默截断又做了一遍，只是换了个地方。宁可报错让人看见。
+ *
+ * 拿回来仍过一遍 `isSoccer`：服务端按 tag 筛与客户端按 tag 判是同一条规则，
+ * 正常情况下一个都筛不掉；留着是防 Gamma 哪天把 slug 的语义改宽。
  */
-export async function fetchSoccerEvents(
-  opts: { limit?: number; maxPages?: number } = {},
-): Promise<GammaEvent[]> {
+export async function fetchSoccerEvents(): Promise<GammaEvent[]> {
   const now = new Date()
   const start = new Date(
     Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - 1, 16, 0, 0),
   )
   const end = new Date(start.getTime() + 48 * 60 * 60 * 1000)
 
-  const pageSize = opts.limit ?? 100
-  const maxPages = opts.maxPages ?? 20
-  const baseParams = {
-    tag_id: SPORTS_TAG_ID,
+  const params = {
+    tag_slug: SOCCER_TAG_SLUG,
     active: true,
     closed: false,
     end_date_min: start.toISOString(),
     end_date_max: end.toISOString(),
-    limit: pageSize,
+    include_markets: false,
+    limit: PAGE_SIZE,
   }
 
+  const t0 = performance.now()
+  // limit=1 只回 1 条，几 KB —— 这一趟只为拿 totalResults
+  const head = await gammaGet<{ pagination?: { totalResults?: unknown } }>('/events/pagination', {
+    ...params,
+    limit: 1,
+  })
+  const total = head.pagination?.totalResults
+  if (typeof total !== 'number' || !Number.isFinite(total)) {
+    throw new GammaError('Gamma 没有返回赛事总数，无法确认能否拉全', false)
+  }
+  const pages = Math.ceil(total / PAGE_SIZE)
+  if (pages > MAX_PAGES) throw new GammaError(`足球赛事多达 ${total} 个，超出预期，先不拉`, false)
+
+  const batches = await Promise.all(
+    Array.from({ length: pages }, (_, i) =>
+      // Gamma 的游标是「已经取到多少条」，不是页码
+      gammaGet<GammaEvent[]>('/events', { ...params, offset: i * PAGE_SIZE }),
+    ),
+  )
   const events: GammaEvent[] = []
-  for (let page = 0; page < maxPages; page++) {
-    // Gamma 的游标是「已经取到多少条」，不是页码
-    const batch = await gammaGet<GammaEvent[]>('/events', { ...baseParams, offset: events.length })
-    if (!Array.isArray(batch) || batch.length === 0) break
-    events.push(...batch)
-    if (batch.length < pageSize) break
+  for (const b of batches) {
+    if (!Array.isArray(b)) throw new GammaError('Gamma 返回的赛事列表不是数组', false)
+    events.push(...b)
+  }
+  const soccer = events.filter(isSoccer)
+
+  // 目标三「先测量」的探针：这是首屏最重的一次拉取，页数和耗时要看得见。
+  // 两个数正常应相等；前者明显小说明 isSoccer 在客户端筛掉了东西，去查 tags
+  if (import.meta.env.DEV) {
+    console.debug(
+      `[gamma] 足球赛事 ${soccer.length}/${total} 个 · ${pages} 页并行 · ${Math.round(performance.now() - t0)}ms`,
+    )
   }
 
-  return events.filter(isSoccer)
+  return soccer
 }
 
 /**
  * 一场比赛（把 Polymarket 拆开的多个衍生赛事合回一场）。
+ *
+ * **不带盘口**：列表是不带 markets 拉的（见 fetchSoccerEvents），盘口按
+ * `eventIds` 在选中时另拉（fetchMatchMarkets）。
  */
 export type SoccerMatch = {
   /** 用主赛事（无后缀那个）的 id，没有就用第一个 */
@@ -199,15 +259,35 @@ export type SoccerMatch = {
   /** 联赛徽标 URL。Gamma 直接给，不用自己存 */
   leagueIcon: string | null
   endDate: string | null
-  /** 合并后的全部盘口 */
-  markets: GammaMarket[]
+  /** 组成这场比赛的全部子赛事 id，盘口按它们拉 */
+  eventIds: string[]
   /** 参与合并的子赛事标题，便于排查缺族 */
   sources: string[]
+  /**
+   * 各子赛事 volume 之和。**一个都没给时是 null 而不是 0**：盘口真的零成交，
+   * 和接口没给这个字段，是两件不同的事。lib/utils 的 formatVolume 对 null
+   * 显示「—」、对 0 显示「$0」，这里把两者分开，那个区分才有意义。
+   */
+  volume: number | null
 }
 
 /** 去掉衍生后缀，得到基础比赛标题 */
 function baseTitle(title?: string): string {
   return (title ?? '').split(/\s+[-–]\s+/)[0].trim()
+}
+
+function sumVolume(events: readonly GammaEvent[]): number | null {
+  let total = 0
+  let seen = false
+  for (const e of events) {
+    const raw = e.volume
+    if (raw === null || raw === undefined || raw === '') continue
+    const v = Number(raw)
+    if (!Number.isFinite(v)) continue
+    total += v
+    seen = true
+  }
+  return seen ? total : null
 }
 
 /**
@@ -247,22 +327,8 @@ export function mergeIntoMatches(events: GammaEvent[]): SoccerMatch[] {
     // 猜错方向会让让球盘连到反的一侧，比不显示更糟
     if (!teams) continue
 
-    // 主赛事 = 标题里没有后缀那个（它带胜平负），找不到就用盘口最多的
-    const primary =
-      list.find((e) => baseTitle(e.title) === (e.title ?? '').trim()) ??
-      [...list].sort((a, b) => (b.markets?.length ?? 0) - (a.markets?.length ?? 0))[0]
-
-    const markets: GammaMarket[] = []
-    const seen = new Set<string>()
-    for (const e of list) {
-      for (const m of e.markets ?? []) {
-        // 同一盘口可能在多个 event 里重复出现，按 id 去重
-        if (seen.has(String(m.id))) continue
-        seen.add(String(m.id))
-        if (m.closed) continue
-        markets.push(m)
-      }
-    }
+    // 主赛事 = 标题里没有后缀那个（它带胜平负），找不到就用第一个
+    const primary = list.find((e) => baseTitle(e.title) === (e.title ?? '').trim()) ?? list[0]
 
     // 联赛代码从图片路径反解，且**在整组里找**而不是只看主赛事：
     // 衍生赛事（- Exact Score 之类）常常有联赛徽标而主赛事没有。
@@ -286,21 +352,54 @@ export function mergeIntoMatches(events: GammaEvent[]): SoccerMatch[] {
       leagueCode,
       leagueIcon,
       endDate: primary.endDate ?? null,
-      markets,
+      eventIds: list.map((e) => String(e.id)),
       sources: list.map((e) => e.title ?? '').filter(Boolean),
+      volume: sumVolume(list),
     })
   }
 
-  // 盘口多的排前面：那些才画得出完整的图
-  return out.sort((a, b) => b.markets.length - a.markets.length)
+  // 子赛事多的排前面：盘口族多，图才画得完整（列表里没有盘口数，子赛事数是
+  // 它最近的代理 —— 一族一个 event）。同样多的按成交额。
+  return out.sort(
+    (a, b) => b.eventIds.length - a.eventIds.length || (b.volume ?? -1) - (a.volume ?? -1),
+  )
 }
 
-/** 单个赛事详情（含 markets） */
-export async function fetchEvent(id: string): Promise<GammaEvent> {
-  const arr = await gammaGet<GammaEvent[] | GammaEvent>('/events', { id, limit: 1 })
-  const evt = Array.isArray(arr) ? arr[0] : arr
-  if (!evt) throw new GammaError(`赛事 ${id} 不存在或已下架`, false)
-  return evt
+/** 把几个子赛事的盘口合成一份：按 id 去重，跳过已结束的 */
+export function mergeMarkets(events: readonly GammaEvent[]): GammaMarket[] {
+  const out: GammaMarket[] = []
+  const seen = new Set<string>()
+  for (const e of events) {
+    for (const m of e.markets ?? []) {
+      // 同一盘口可能在多个 event 里重复出现，按 id 去重
+      if (seen.has(String(m.id))) continue
+      seen.add(String(m.id))
+      if (m.closed) continue
+      out.push(m)
+    }
+  }
+  return out
+}
+
+/**
+ * 一场比赛的全部盘口：按子赛事 id 一次拉回再合并。
+ *
+ * 多个 id 交给 gammaGet 按重复键编码（见那里的说明）。不带时间窗和
+ * active/closed：id 已经是精确定位，再加筛选只会在比赛刚结束的边界上把它
+ * 筛没；已结束的盘口由 mergeMarkets 跳过。
+ *
+ * 少了子赛事只警告不抛：按 id 查不到多半是那个 event 被下架了，属于正常
+ * 状态而不是传输失败。缺一族的图照样能画，控制台留一行给排查用。
+ */
+export async function fetchMatchMarkets(eventIds: readonly string[]): Promise<GammaMarket[]> {
+  if (eventIds.length === 0) return []
+  const events = await gammaGet<GammaEvent[]>('/events', { id: eventIds, limit: PAGE_SIZE })
+  if (!Array.isArray(events)) throw new GammaError('Gamma 返回的赛事列表不是数组', false)
+  if (events.length < eventIds.length) {
+    const got = new Set(events.map((e) => String(e.id)))
+    console.warn(`[gamma] 子赛事缺了 ${eventIds.filter((id) => !got.has(id)).join(', ')}，这几族盘口不在图上`)
+  }
+  return mergeMarkets(events)
 }
 
 /**
