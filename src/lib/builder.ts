@@ -23,13 +23,22 @@
  * 「Attach it to every order you submit — **no additional authentication is
  * required**」。
  *
- * Builder **API key** 是另一回事（那个是真凭据，官方警告 never expose），
- * 但全 SDK 只有两处要求它（`hasBuilderApiKey` 的两个调用点）：
- *  1. Combo RFQ（`requestComboQuote` / `openRfqSession`）
- *  2. Session-key authorization
+ * Builder **API key** 是另一回事（那个是真凭据，官方警告 never expose）。
+ * 它在 SDK 里的作用是把客户端的 `supportsGasless` 打开
+ * （`context.apiKey?.supportGasless`），凡是**走 relayer 的免 gas 操作**都要它：
+ *  1. **部署 Deposit Wallet**（`Ex()` 开头就 `invariant(supportsGasless, ...)`）
+ *  2. 免 gas 的交易授权 setup（同一条 relayer 通道）
+ *  3. Combo RFQ（`requestComboQuote` / `openRfqSession`）
+ *  4. Session-key authorization
  *
- * 本项目两个都不用。**哪天要做 combo 交易，那时才需要后端** —— 到那一步前
- * 别去建签名服务，它保护的是我们还不需要的东西。
+ * ⚠️ **踩到过（2026-09-25）**：本以为「本项目不做 combo，就用不上这个 key」——错。
+ * 一旦账户走 Deposit Wallet flow 且那个 Deposit Wallet **尚未部署**，
+ * `createSecureClient` 会先去部署它，于是撞上第 1 条：没配 `apiKey` 授权就抛
+ * `Deposit Wallet deployment requires a Relayer API Key or Builder API Key`。
+ * 浏览器端能配的是 `relayerApiKey({key,address})`（`@polymarket/client` 根导出），
+ * 但**把这个密钥打进前端包等于对每个访客公开它**（与本注释开头的 never expose
+ * 冲突）——安全的做法是后端 `remoteBuilderSigning`，而本 dapp 无后端。详见
+ * WALLET-HANDOFF.md 的「更新 2」。
  *
  * ## 为什么是编译期常量而不是运行时配置
  *

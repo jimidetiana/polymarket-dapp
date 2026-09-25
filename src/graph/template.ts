@@ -51,6 +51,14 @@ export interface TemplateSlot {
   /** SVG 坐标（已按设计稿翻转 Y） */
   x: number
   y: number
+  /**
+   * 窄屏收束的**目标位置**：容器越窄，这个槽位越向 (x, y) 靠拢（见
+   * lib/layout.ts 的 convergeStrength / convergePositions）。
+   *
+   * 目前只有中心那两条腿（主队进球 / 客队进球）带这个字段。原因见
+   * TEMPLATE_SLOTS 上方的说明。
+   */
+  converge?: { x: number; y: number }
   bind?: SlotBind
   /** kind=goals 时算哪个主体的进球数 */
   goalsOf?: 'total' | 'home' | 'away'
@@ -59,72 +67,106 @@ export interface TemplateSlot {
 /**
  * 26 个槽位。
  *
- * 前 22 个的坐标直接取设计稿，Y 已翻转（PDF 的 Y 向上，SVG 向下）：
- *   svgY = 1775 − pdfY
+ * ## 坐标是**规整过**的设计稿，不是原样照抄
  *
- * 后加的 4 个（总进球 4.5 / 5.5、主客队总进球 2.5）不在设计稿里，按各自梯子
- * **最后一步的向量再走一步**推出来，所以会落到设计稿 1334×1775 的框外
- * （y 为负、x 越界）。这无妨：排布时 lib/layout.ts 把全部坐标归一到容器，
- * 只有相对位置有意义。
+ * 原设计稿的坐标是人手摆的，有三类不齐：
+ *
+ *   1. **梯子**：右列 x 在 813 / 818 之间跳，纵向步长 145 / 163 / 206 三种；
+ *      整条梯子还偏在轴线左侧约 10（中心三节点和「平」都在 x=693）。
+ *   2. **两翼不是镜像**：左侧步长 (205, 128)，右侧 (197, 90) —— 同一把梯子
+ *      两边粗细不同；最外沿离轴线也不等（786 vs 726）。
+ *   3. **行内错位**：ml_home 比同排另两个高 9，sp_home_-1.5 高 15，
+ *      sp_away_-2.5 高 9；让球内侧两列偏离轴线也不等（-134 / +146）。
+ *
+ * 现在全部按 **x = 693 轴线镜像 + 等步长**重排，成对的槽位 x 之和恒为 1386。
+ * 对称性由 template.test.ts 断言 —— 以后手改坐标会被测试挡住。
+ *
+ * **只动坐标，不动拓扑**：槽位数、连线表、每个槽位绑哪张盘全都没变，
+ * 「谁在谁上面 / 左边」也没变，换的只是疏密。这就是「总体结构不变」的意思。
+ *
+ * ## 为什么只有中心两条腿带 converge
+ *
+ * 上面那套坐标是**等比例**铺开的，但画布不是等比缩放 —— lib/layout.ts 把 x 和
+ * y 各自归一化后**独立**拉伸。后果是容器一窄，中心「进球 → 主队进球 / 客队进球」
+ * 那个三角横向先塌陷、纵向照铺，两条腿变得又长又挤。而两翼和梯子本来就是
+ * 「横向越开越好看」的结构，收它们反而错，所以只给这两个槽位一个窄屏目标：
+ * 向中轴收（±126 → ±86）**并上移**（落差 171 → 110），把纵向让给下面的胜平负
+ * 和让球两行。
+ *
+ * 强度随宽高比连续变化（不是开关），且带安全回退 —— 收束不能把节点挤到重叠，
+ * 退到 0 就是保持原样。两件事都在 layout.ts 里，见那边的说明。
+ *
+ * 包围盒刻意保持与设计稿一致（x 跨度 1512、y 跨度 1962，原 1512 / 1963）。
+ * 因为排布是先把坐标归一再按容器拉伸，**包围盒比例决定节点疏密**，跨度一动
+ * 节点大小就跟着变。对齐前后最近两点间距 211.8 → 212.4，所以圆半径基本不动
+ * —— 这次重排不会让节点变大或变小。
+ *
+ * Y 已是 SVG 向下坐标（设计稿 PDF 的 Y 向上，翻转式 svgY = 1775 − pdfY）。
+ * 后补的 4 个（总进球 4.5 / 5.5、主客队总进球 2.5）本来就是按梯子向量外推的，
+ * 重排后自然落在同一条等步长梯子上。
  */
 export const TEMPLATE_SLOTS: TemplateSlot[] = [
-  // ---- 全场大小球梯子（图的上半），自下而上左右交替 ----
-  { key: 'total_5.5', label: '总进球 5.5', kind: 'market', x: 813, y: -300,
+  // ---- 全场大小球梯子（图的上半），自下而上左右交替。两列 561 / 825，步长 185 ----
+  { key: 'total_5.5', label: '总进球 5.5', kind: 'market', x: 825, y: -299,
     bind: { family: 'ou', period: 'ft', subject: 'match', line: 5.5, side: 'over' } },
-  { key: 'total_4.5', label: '总进球 4.5', kind: 'market', x: 552, y: -94,
+  { key: 'total_4.5', label: '总进球 4.5', kind: 'market', x: 561, y: -114,
     bind: { family: 'ou', period: 'ft', subject: 'match', line: 4.5, side: 'over' } },
-  { key: 'total_3.5', label: '总进球 3.5', kind: 'market', x: 813, y: 112,
+  { key: 'total_3.5', label: '总进球 3.5', kind: 'market', x: 825, y: 71,
     bind: { family: 'ou', period: 'ft', subject: 'match', line: 3.5, side: 'over' } },
-  { key: 'total_2.5', label: '总进球 2.5', kind: 'market', x: 552, y: 318,
+  { key: 'total_2.5', label: '总进球 2.5', kind: 'market', x: 561, y: 256,
     bind: { family: 'ou', period: 'ft', subject: 'match', line: 2.5, side: 'over' } },
-  { key: 'total_1.5', label: '总进球 1.5', kind: 'market', x: 818, y: 481,
+  { key: 'total_1.5', label: '总进球 1.5', kind: 'market', x: 825, y: 441,
     bind: { family: 'ou', period: 'ft', subject: 'match', line: 1.5, side: 'over' } },
-  { key: 'total_0.5', label: '总进球 0.5', kind: 'market', x: 552, y: 626,
+  { key: 'total_0.5', label: '总进球 0.5', kind: 'market', x: 561, y: 626,
     bind: { family: 'ou', period: 'ft', subject: 'match', line: 0.5, side: 'over' } },
 
-  // ---- 单队大小球（两翼），从中心向外上方延伸 ----
-  { key: 'home_2.5', label: '主队总进球 2.5', kind: 'market', x: -93, y: 671,
+  // ---- 单队大小球（两翼），从中心向外上方延伸。两侧同一把梯子，步长 (189, 109) ----
+  { key: 'home_2.5', label: '主队总进球 2.5', kind: 'market', x: -63, y: 690,
     bind: { family: 'ou', period: 'ft', subject: 'home', line: 2.5, side: 'over' } },
-  { key: 'away_2.5', label: '客队总进球 2.5', kind: 'market', x: 1419, y: 709,
+  { key: 'away_2.5', label: '客队总进球 2.5', kind: 'market', x: 1449, y: 690,
     bind: { family: 'ou', period: 'ft', subject: 'away', line: 2.5, side: 'over' } },
-  { key: 'home_1.5', label: '主队总进球 1.5', kind: 'market', x: 112, y: 799,
+  { key: 'home_1.5', label: '主队总进球 1.5', kind: 'market', x: 126, y: 799,
     bind: { family: 'ou', period: 'ft', subject: 'home', line: 1.5, side: 'over' } },
-  { key: 'away_1.5', label: '客队总进球 1.5', kind: 'market', x: 1222, y: 799,
+  { key: 'away_1.5', label: '客队总进球 1.5', kind: 'market', x: 1260, y: 799,
     bind: { family: 'ou', period: 'ft', subject: 'away', line: 1.5, side: 'over' } },
-  { key: 'away_0.5', label: '客队总进球 0.5', kind: 'market', x: 1025, y: 889,
-    bind: { family: 'ou', period: 'ft', subject: 'away', line: 0.5, side: 'over' } },
-  { key: 'home_0.5', label: '主队总进球 0.5', kind: 'market', x: 317, y: 927,
+  { key: 'home_0.5', label: '主队总进球 0.5', kind: 'market', x: 315, y: 908,
     bind: { family: 'ou', period: 'ft', subject: 'home', line: 0.5, side: 'over' } },
+  { key: 'away_0.5', label: '客队总进球 0.5', kind: 'market', x: 1071, y: 908,
+    bind: { family: 'ou', period: 'ft', subject: 'away', line: 0.5, side: 'over' } },
 
-  // ---- 中心三个：无盘口，显示推断进球数 ----
+  // ---- 中心三个：无盘口，显示推断进球数。下面两个关于轴线 ±126 ----
+  // 后两个带 converge：窄屏时收到 ±86 并上移 61（落差 171 → 110），见上方说明。
   { key: 'goals_total', label: '进球', kind: 'goals', x: 693, y: 846, goalsOf: 'total' },
-  { key: 'goals_home', label: '主队进球', kind: 'goals', x: 567, y: 1017, goalsOf: 'home' },
-  { key: 'goals_away', label: '客队进球', kind: 'goals', x: 818, y: 1017, goalsOf: 'away' },
+  { key: 'goals_home', label: '主队进球', kind: 'goals', x: 567, y: 1017, goalsOf: 'home',
+    converge: { x: 607, y: 956 } },
+  { key: 'goals_away', label: '客队进球', kind: 'goals', x: 819, y: 1017, goalsOf: 'away',
+    converge: { x: 779, y: 956 } },
 
-  // ---- 胜平负 ----
-  { key: 'ml_home', label: '主胜', kind: 'market', x: 415, y: 1211,
+  // ---- 胜平负。三个同一行，两侧关于轴线 ±285 ----
+  { key: 'ml_home', label: '主胜', kind: 'market', x: 408, y: 1220,
     bind: { family: 'moneyline', period: 'ft', role: 'home', side: 'yes' } },
   { key: 'ml_draw', label: '平', kind: 'market', x: 693, y: 1220,
     bind: { family: 'moneyline', period: 'ft', role: 'draw', side: 'yes' } },
-  { key: 'ml_away', label: '客胜', kind: 'market', x: 985, y: 1220,
+  { key: 'ml_away', label: '客胜', kind: 'market', x: 978, y: 1220,
     bind: { family: 'moneyline', period: 'ft', role: 'away', side: 'yes' } },
 
-  // ---- 让球（图的下半）。line 以 subject 视角，side 决定取哪侧价 ----
-  { key: 'sp_home_-1.5', label: '主队 -1.5', kind: 'market', x: 230, y: 1396,
+  // ---- 让球（图的下半）。四列 226 / 553 / 833 / 1160（关于轴线 ±467 / ±140），
+  //      两行 1411 / 1663。line 以 subject 视角，side 决定取哪侧价 ----
+  { key: 'sp_home_-1.5', label: '主队 -1.5', kind: 'market', x: 226, y: 1411,
     bind: { family: 'spread', period: 'ft', subject: 'home', line: -1.5, side: 'home' } },
-  { key: 'sp_home_+1.5', label: '主队 +1.5', kind: 'market', x: 563, y: 1411,
+  { key: 'sp_home_+1.5', label: '主队 +1.5', kind: 'market', x: 553, y: 1411,
     bind: { family: 'spread', period: 'ft', subject: 'home', line: 1.5, side: 'home' } },
-  { key: 'sp_away_-1.5', label: '客队 -1.5', kind: 'market', x: 843, y: 1411,
+  { key: 'sp_away_-1.5', label: '客队 -1.5', kind: 'market', x: 833, y: 1411,
     bind: { family: 'spread', period: 'ft', subject: 'away', line: -1.5, side: 'away' } },
-  { key: 'sp_away_+1.5', label: '客队 +1.5', kind: 'market', x: 1164, y: 1411,
+  { key: 'sp_away_+1.5', label: '客队 +1.5', kind: 'market', x: 1160, y: 1411,
     bind: { family: 'spread', period: 'ft', subject: 'away', line: 1.5, side: 'away' } },
-  { key: 'sp_home_-2.5', label: '主队 -2.5', kind: 'market', x: 230, y: 1663,
+  { key: 'sp_home_-2.5', label: '主队 -2.5', kind: 'market', x: 226, y: 1663,
     bind: { family: 'spread', period: 'ft', subject: 'home', line: -2.5, side: 'home' } },
-  { key: 'sp_home_+2.5', label: '主队 +2.5', kind: 'market', x: 563, y: 1663,
+  { key: 'sp_home_+2.5', label: '主队 +2.5', kind: 'market', x: 553, y: 1663,
     bind: { family: 'spread', period: 'ft', subject: 'home', line: 2.5, side: 'home' } },
-  { key: 'sp_away_-2.5', label: '客队 -2.5', kind: 'market', x: 843, y: 1654,
+  { key: 'sp_away_-2.5', label: '客队 -2.5', kind: 'market', x: 833, y: 1663,
     bind: { family: 'spread', period: 'ft', subject: 'away', line: -2.5, side: 'away' } },
-  { key: 'sp_away_+2.5', label: '客队 +2.5', kind: 'market', x: 1164, y: 1663,
+  { key: 'sp_away_+2.5', label: '客队 +2.5', kind: 'market', x: 1160, y: 1663,
     bind: { family: 'spread', period: 'ft', subject: 'away', line: 2.5, side: 'away' } },
 ]
 
@@ -221,6 +263,11 @@ export interface ResolvedSlot extends TemplateSlot {
   nodeId: string | null
   /** 原始盘口 id，给足球页下单深链用（nodeId 是进程内生成的 `m${id}`） */
   marketId: string | null
+  /**
+   * 盘口的 conditionId。查这张盘的持仓/成交只能用它，不能用 tokenId
+   * —— 理由见 lib/positions.ts 顶部（`asset=` 参数被静默忽略）。
+   */
+  conditionId: string | null
   /** 显示哪一侧的价 */
   sideName: string | null
   /**
@@ -301,6 +348,7 @@ export function resolveTemplate(graph: MarketGraph, goals: GoalCounts): Resolved
       ...slot,
       nodeId: null,
       marketId: null,
+      conditionId: null,
       sideName: null,
       tokenId: null,
       bid: null,
@@ -328,6 +376,7 @@ export function resolveTemplate(graph: MarketGraph, goals: GoalCounts): Resolved
       ...base,
       nodeId: node.id,
       marketId: node.marketId,
+      conditionId: node.conditionId,
       sideName,
       tokenId: side?.tokenId ?? null,
       bid,

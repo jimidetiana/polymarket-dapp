@@ -1,0 +1,13 @@
+# Cloudflare Workers 部署配置（薄后端：builder 归因签名端点）。
+#
+# 只用 Web 标准 API（Web Crypto），不碰 node 内建，所以**不需要** nodejs_compat。
+# 密钥别写这里 —— 用 `npx wrangler secret put <NAME>` 加密注入（见 worker.js 顶部注释）。
+#
+# 部署：cd server && npx wrangler deploy
+name = "polymarket-builder-sign"
+main = "worker.js"
+compatibility_date = "2025-09-01"
+
+# Origin 白名单等非密配置可放这（也可改用 secret）。密钥三件套请走 `wrangler secret put`。
+# [vars]
+# SIGN_ALLOWED_ORIGINS = "https://your-frontend.example.com"

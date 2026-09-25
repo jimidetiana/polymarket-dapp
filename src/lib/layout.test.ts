@@ -15,6 +15,7 @@ import {
   MAX_R,
   MIN_R,
   R_OF_GAP,
+  convergeStrength,
   layoutSlots,
 } from './layout'
 import { TEMPLATE_SLOTS } from '../graph/template'
@@ -182,4 +183,61 @@ test('留白与半径的关系符合 EDGE_PAD_OF_R', () => {
 
 test('R_OF_GAP < 0.5，保证相邻节点之间留得下连线', () => {
   assert.ok(R_OF_GAP < 0.5)
+})
+
+// ==================== 窄屏收束 ====================
+
+test('收束强度随宽高比单调：越窄越强，且夹在 [0,1]', () => {
+  const ratios = [4, 2.4, 1.8, 1.2, 1, 0.75, 0.6, 0.3]
+  const ts = ratios.map((a) => convergeStrength(a * 100, 100))
+  for (const [i, t] of ts.entries()) {
+    assert.ok(t >= 0 && t <= 1, `宽高比 ${ratios[i]} 的强度 ${t} 越界`)
+  }
+  for (let i = 1; i < ts.length; i += 1) {
+    assert.ok(ts[i] >= ts[i - 1], `宽高比 ${ratios[i]} 更窄，强度反而更小`)
+  }
+  assert.equal(ts[0], 0, '极宽时应当完全不收')
+  assert.equal(ts[ts.length - 1], 1, '极窄时应当收到底')
+})
+
+test('收束确实是「向中轴收 + 上移」，且不会反方向', () => {
+  for (const [name, c] of Object.entries(ALL)) {
+    const converged = layoutSlots(TEMPLATE_SLOTS, c).slots
+    const bare = layoutSlots(SLOTS, c).slots
+    const axis = converged.find((s) => s.key === 'goals_total')!.x
+    for (const k of ['goals_home', 'goals_away']) {
+      const now = converged.find((s) => s.key === k)!
+      const was = bare.find((s) => s.key === k)!
+      assert.ok(
+        Math.abs(now.x - axis) <= Math.abs(was.x - axis) + 1e-6,
+        `${name} ${k} 没有向中轴收`,
+      )
+      assert.ok(now.y <= was.y + 1e-6, `${name} ${k} 没有上移`)
+    }
+  }
+})
+
+test('收束不改变节点半径 —— 只挪位置，不重新缩放整张图', () => {
+  // 这是这次改动最容易被破坏的承诺：r 由「最近一对的间距 × R_OF_GAP」算出，
+  // 而中心那个三角正好是全图最近的一对。若 r 改成按收束后的位置算，全图的
+  // 圆都会跟着缩水。
+  for (const [name, c] of Object.entries(ALL)) {
+    const withConverge = layoutSlots(TEMPLATE_SLOTS, c).r
+    const without = layoutSlots(SLOTS, c).r
+    assert.equal(withConverge, without, `${name}: 半径被收束改动了 ${without} → ${withConverge}`)
+  }
+})
+
+test('收束是连续的：宽度连续变化时节点不跳变', () => {
+  // 拖窗口时宽度是连续变的，节点位置也必须连续 —— 否则会看到它「啪」地跳一格。
+  // 安全回退是按档试的，所以这里专门盯住台阶。
+  let prev: { x: number; y: number } | null = null
+  for (let w = 200; w <= 2400; w += 4) {
+    const g = layoutSlots(TEMPLATE_SLOTS, { w, h: 900 }).slots.find((s) => s.key === 'goals_home')!
+    if (prev) {
+      const jump = Math.hypot(g.x - prev.x, g.y - prev.y)
+      assert.ok(jump < 8, `宽度 ${w} 处跳了 ${jump.toFixed(1)}px`)
+    }
+    prev = { x: g.x, y: g.y }
+  }
 })

@@ -1,14 +1,25 @@
 /**
- * 三块布局：关系图（主）+ 钱包 + 订单。
+ * 常规网页布局：顶栏（品牌 + 价格模式 + 钱包）+ 左栏（比赛列表）+ 关系图。
  *
- * 关系图占绝对主位，钱包和订单收在右侧窄栏 —— 核心是那张图，
- * 交易是图上的动作，不是独立页面。
+ * 关系图仍占主位 —— 核心是那张图，交易是图上的动作，不是独立页面。
+ * 变的是控制项的位置：比赛列表从顶栏挪进左栏，钱包从版面收进顶栏的浮窗。
+ *
+ * 原来比赛选择器挤在顶栏里，只能靠 max-w 截断（窄屏 150px，队名都放不下），
+ * 点开还是一层盖住半张图的浮层 —— 见 match-picker.tsx 顶部。列表进左栏后
+ * 宽度够用，选中态也一直看得见。
+ *
+ * 左栏只有比赛列表一件事：其余信息（本场统计、实时/快照判据、订单摘要）
+ * 看着有用，实际要么画布上已经有了（节点自带快照标记），要么点节点时
+ * 会弹出下单面板。堆在栏里只是把画布挤窄、把列表挤到看不见。
+ *
+ * 窄屏（<lg）左栏收成抽屉，由顶栏的汉堡按钮开合，画布因此拿到整个宽度。
+ * 宽屏下左栏固定 288px 常驻。
  *
  * 数据链路全在浏览器里：Gamma API → 合并衍生赛事 → buildMarketGraph
  * → resolveTemplate → 画布。没有后端，没有库。
  */
 import { Suspense, lazy, useEffect, useMemo, useState } from 'react'
-import { ConnectWallet, WalletPanel, Panel } from './components/connect-wallet'
+import { WalletMenu } from './components/connect-wallet'
 import { MarketGraphCanvas } from './components/market-graph-canvas'
 import { MatchPicker } from './components/match-picker'
 /**
@@ -27,13 +38,15 @@ import { MatchPicker } from './components/match-picker'
 const OrderDialog = lazy(() =>
   import('./components/order-dialog').then((m) => ({ default: m.OrderDialog })),
 )
-import { useSoccerMatches, useMarketGraph, TEMPLATE_EDGES } from './lib/use-graph'
+import { useSoccerMatches, useMarketGraph, usePositionMatches, TEMPLATE_EDGES } from './lib/use-graph'
+import { defaultMatchId, mergeMatchLists } from './lib/match-list'
 import { PRICE_MODE_LABEL, type PriceMode } from './lib/odds'
-import { translateLeague } from './lib/dict'
-import { formatTickPrice, DEFAULT_TICK } from './lib/tick'
+/**
+ * 持仓。走公开 REST（lib/positions.ts），**不碰 SDK** —— 画布和比赛列表都在主包里，
+ * 引一个间接依赖 SDK 的 hook 会把那 300 kB 打回首屏（见 lib/use-positions.ts 顶部）。
+ */
+import { usePositions } from './lib/use-positions'
 import { cn } from './lib/utils'
-import type { ConnState } from './lib/clob-ws'
-import type { GraphSide } from './graph/types'
 
 /**
  * 词典维护页面，**只在开发时打包**。
@@ -46,6 +59,7 @@ import type { GraphSide } from './graph/types'
  * DEV 门就白设了。
  */
 const DictAdmin = import.meta.env.DEV ? lazy(() => import('./pages/dict-admin')) : null
+const TestGraph = lazy(() => import('./pages/test-graph').then((m) => ({ default: m.default })))
 
 /** 当前 hash 路由。没上 react-router —— 只有两个页面，装路由库不值得 */
 function useHash(): string {
@@ -75,11 +89,41 @@ export default function App() {
     )
   }
 
+  if (hash === '#/test') {
+    return (
+      <Suspense
+        fallback={
+          <div className="flex h-dvh items-center justify-center bg-background text-sm text-muted-foreground">
+            加载中…
+          </div>
+        }
+      >
+        <TestGraph />
+      </Suspense>
+    )
+  }
+
   return <GraphPage />
 }
 
 function GraphPage() {
   const { matches, loading, error, network, reload } = useSoccerMatches()
+  /**
+   * 持仓标记的数据源。一次取全账户，两处共用：画布按 tokenId 查、列表按 eventId 查。
+   *
+   * 在这一层取而不是各组件自己取：同一份数据取两次，会出现「图上有标记、列表没有」
+   * 这种自相矛盾（两次请求的时机不同）。拿不到就是空索引，不挡界面。
+   */
+  const { index: positions } = usePositions()
+  /**
+   * 有仓位但**不在时间窗内**的比赛，按赛事 id 单独捞回来。
+   *
+   * 窗口（今天+明天）管的是「哪些比赛还能下注」，而「我参与过哪些比赛」跟窗口无关 ——
+   * 踢完的比赛早就掉出窗口了，列表里没有那一行，持仓徽标也就没有地方挂。
+   * 合并规则见 lib/match-list.ts 的 mergeMatchLists（按标题去重、eventIds 取并集）。
+   */
+  const extraMatches = usePositionMatches(positions.eventIds)
+  const allMatches = useMemo(() => mergeMatchLists(matches, extraMatches), [matches, extraMatches])
   const [matchId, setMatchId] = useState<string | null>(null)
   const [priceMode, setPriceMode] = useState<PriceMode>('prob')
   const [selectedKey, setSelectedKey] = useState<string | null>(null)
@@ -94,13 +138,31 @@ function GraphPage() {
   const [pickedSideName, setPickedSideName] = useState<string | null>(null)
   /** 弹窗开关。与 pickedKey 分开：关掉弹窗不该丢掉「刚才看的是哪个盘口」 */
   const [orderOpen, setOrderOpen] = useState(false)
+  /**
+   * 窄屏左栏抽屉的开合。宽屏左栏常驻，这个值不起作用（lg:translate-x-0 盖掉）。
+   *
+   * 不按断点分别存状态：选完比赛要收起抽屉，而「收起」在宽屏下本来就该是
+   * 无操作 —— 一个布尔值加一组 lg: 覆盖类就够，再拆一个「是不是窄屏」的
+   * 状态就得跟着 resize 同步，那是为了省一次无效果的 setState 引入一处不同步。
+   */
+  const [navOpen, setNavOpen] = useState(false)
 
-  // 首次拿到列表时自动选盘口最多的那场（列表已按盘口数排序）
+  /**
+   * 首次拿到列表时自动打开**开赛时间最近的那场**。
+   *
+   * 不用列表给的顺序（那是重要性排序）：那个顺序与眼睛看到的列表顺序（按开赛时间）
+   * 不是一回事，于是默认打开的那场和列表第一行常常不是同一场 —— 实测踩过，
+   * 在一个不是自己刚下过单的比赛上找持仓，结论成了「我的持仓不见了」。
+   * 口径见 lib/match-list.ts 的 defaultMatchId（有测试钉着）。
+   *
+   * 只依赖 `matches`：补进来的那些是窗口外的历史比赛，默认不该落到一场已经踢完的
+   * 比赛上；等它们回来时 matchId 早就定了，不该被改。
+   */
   useEffect(() => {
-    if (matchId == null && matches.length > 0) setMatchId(matches[0].id)
+    if (matchId == null && matches.length > 0) setMatchId(defaultMatchId(matches))
   }, [matches, matchId])
 
-  const match = matches.find((m) => m.id === matchId) ?? null
+  const match = allMatches.find((m) => m.id === matchId) ?? null
   const {
     graph,
     marketsLoading,
@@ -109,8 +171,6 @@ function GraphPage() {
     slots,
     goals,
     prevPrices,
-    wsState,
-    quotedCount,
     book,
     tickByToken,
   } = useMarketGraph(match)
@@ -159,31 +219,29 @@ function GraphPage() {
     //  1. 画布要用 ResizeObserver 量到一个**确定的**高度才能算缩放。
     //     min-h-* 下的百分比高度解析成 auto，子元素的 h-full 会量到 0，
     //     contain 模式就永远算不出来。
-    //  2. dvh 而不是 vh：手机浏览器的 100vh 不含地址栏，用 vh 会让底部
-    //     被地址栏切掉一截，而被切掉的正好是侧栏面板。
+    //  2. dvh 而不是 vh：手机浏览器的 100vh 不含地址栏，用 vh 底部会被
+    //     地址栏切掉一截。这一层是撑开整个布局的那个高度，所以丢的是全页
+    //     的高度（画布跟着矮一截），不只是某个面板。
     <div className="flex h-dvh flex-col bg-background text-foreground">
-      <header className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-border px-3 py-2 sm:px-4 sm:py-2.5">
-        <div className="min-w-0">
-          <h1 className="text-sm font-semibold">盘口网状图</h1>
-          {/* 副标题在窄屏藏掉：它是说明性文字，让位给比赛下拉和钱包按钮 */}
-          <p className="hidden text-[11px] text-muted-foreground sm:block">
-            结构关系与实时价格叠在一张图上，点节点直接下单
-          </p>
+      <header className="flex shrink-0 items-center justify-between gap-2 border-b border-border px-3 py-2 sm:px-4 sm:py-2.5">
+        <div className="flex min-w-0 items-center gap-2">
+          {/* 抽屉开关，只在窄屏出现 —— 宽屏左栏常驻，这个按钮没有意义 */}
+          <button
+            type="button"
+            onClick={() => setNavOpen(true)}
+            aria-label="打开菜单"
+            className="rounded-md border border-border p-1.5 text-foreground/80 hover:bg-muted lg:hidden"
+          >
+            <MenuIcon />
+          </button>
+
+          {/* 品牌字标：字号比正文大一档，用品牌蓝而不是前景黑，
+              和按钮/选中态同一个强调色，全站只有一个强调色。
+              窄屏截断而不是换行：顶栏高度要固定，否则画布高度跟着抖 */}
+          <h1 className="truncate text-lg font-semibold tracking-tight text-primary">polysoccer</h1>
         </div>
 
         <div className="flex min-w-0 items-center gap-2">
-          <MatchPicker
-            matches={matches}
-            matchId={matchId}
-            onPick={(id) => {
-              setMatchId(id)
-              setSelectedKey(null)
-              setPickedKey(null)
-              setPickedSideName(null)
-              setOrderOpen(false)
-            }}
-          />
-
           <button
             type="button"
             onClick={() => setPriceMode(priceMode === 'prob' ? 'odds' : 'prob')}
@@ -203,7 +261,7 @@ function GraphPage() {
             </a>
           )}
 
-          <ConnectWallet />
+          <WalletMenu />
         </div>
       </header>
 
@@ -211,16 +269,84 @@ function GraphPage() {
           少了 min-h-0，flex 子项的默认 min-height:auto 会被内容顶高，
           高度重新变成不确定的，画布又量不到数。 */}
       {/*
-        窄屏纵向堆叠、宽屏左右分栏。断点取 lg（1024px）而不是 sm：
-        侧栏 288px + 画布至少要 ~600px 才画得开，两者相加已经接近 900px，
-        在 sm/md 就分栏会把画布挤到比手机还窄。
+        横排到底，不再按断点切成纵向堆叠：窄屏时左栏是 position:fixed
+        （脱离文档流），main 的在流子项就只剩画布一个，它自然拿到整个宽度
+        和高度。原来那套「窄屏纵向堆叠 + 画布固定 60dvh」于是整段不需要了 ——
+        顺带让手机上的画布从 60dvh 变成整屏。
 
-        纵向堆叠时画布固定占 60dvh：画布必须拿到一个**确定的**高度才能算缩放，
-        用 flex-1 在可滚动的纵向容器里会退化成内容高度（也就是 0）。
+        也不要 overflow-y-auto：宽屏左栏自己滚，窄屏抽屉自己滚，画布不滚。
+        main 只负责把确定的高度传下去。
       */}
-      <main className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-3 lg:flex-row lg:overflow-hidden">
-        {/* 关系图 */}
-        <section className="flex h-[60dvh] min-h-0 min-w-0 shrink-0 rounded-lg border border-border bg-card lg:h-auto lg:flex-1 lg:shrink">
+      <main className="flex min-h-0 flex-1 overflow-hidden">
+        {/* 窄屏抽屉的遮罩。宽屏左栏常驻，既不需要遮罩，也不该挡住画布 */}
+        {navOpen && (
+          <div className="fixed inset-0 z-40 bg-black/40 lg:hidden" onClick={() => setNavOpen(false)} />
+        )}
+
+        {/*
+          左栏。窄屏是抽屉：fixed 脱离文档流、用负位移藏在屏幕外，开合只改
+          transform 和 visibility，不动布局 —— 画布的 ResizeObserver 不会
+          因为开合而重算一次缩放。
+
+          宽屏（lg）回到流内常驻：static 一次性让 fixed / max-w / 位移失效。
+
+          藏起来时补一个 invisible，而不是只靠位移：-translate-x-full 只是把
+          元素挪出视口，它仍在无障碍树里，键盘 Tab 会跳进一栏看不见的控件。
+          visibility 是可过渡的离散属性（变成 visible 立即生效，变成 hidden
+          要等过渡走完），所以配 transition-[transform,visibility] 滑动照旧顺。
+
+          DOM 里排在画布前面：宽屏下它就是左栏，读屏和 Tab 顺序都该先到它。
+          窄屏它是 fixed，在文档流里的位置不影响显示。
+        */}
+        <aside
+          className={cn(
+            'fixed inset-y-0 left-0 z-50 flex w-72 max-w-[85vw] shrink-0 flex-col overflow-y-auto border-r border-border bg-card transition-[transform,visibility] duration-200',
+            'lg:static lg:z-auto lg:max-w-none lg:visible lg:translate-x-0',
+            navOpen ? 'visible translate-x-0' : 'invisible -translate-x-full',
+          )}
+        >
+          {/* 抽屉盖住了顶栏的品牌，这里补一个，顺带放个关闭按钮 */}
+          <div className="flex items-center justify-between gap-2 border-b border-border px-3 py-2 lg:hidden">
+            <span className="text-base font-semibold tracking-tight text-primary">polysoccer</span>
+            <button
+              type="button"
+              onClick={() => setNavOpen(false)}
+              aria-label="关闭菜单"
+              className="rounded-md border border-border px-2 py-0.5 text-xs text-muted-foreground hover:bg-muted hover:text-foreground"
+            >
+              ✕
+            </button>
+          </div>
+
+          {/* 左栏只有比赛列表一件事。标题行是固定的（不折叠）：只有一块内容时
+              折叠控件没有意义，而「N 场」这个计数值得一直看得见 */}
+          <div className="flex items-baseline justify-between gap-2 border-b border-border px-3 py-2.5">
+            <span className="text-xs font-semibold text-foreground">比赛</span>
+            <span className="text-[10px] text-muted-foreground">{allMatches.length} 场</span>
+          </div>
+
+          <div className="p-3">
+            <MatchPicker
+              matches={allMatches}
+              matchId={matchId}
+              positionEventIds={positions.eventIds}
+              onPick={(id) => {
+                setMatchId(id)
+                setSelectedKey(null)
+                setPickedKey(null)
+                setPickedSideName(null)
+                setOrderOpen(false)
+                // 窄屏选完就收起抽屉，否则图还压在抽屉后面（宽屏下这句是空操作）
+                setNavOpen(false)
+              }}
+            />
+          </div>
+        </aside>
+
+        {/* 关系图。m-3 而不是给 main 加 padding：左栏要贴到顶栏和底边
+            （border-r 才是一条通到底的分隔线，抽屉盖上顶栏时也才不留缝），
+            所以那一圈的间距只能由画布这边让出来 */}
+        <section className="m-3 flex min-h-0 min-w-0 flex-1 rounded-lg border border-border bg-card">
           {loading ? (
             <Centered>正在拉取比赛…</Centered>
           ) : error && matches.length === 0 ? (
@@ -250,6 +376,7 @@ function GraphPage() {
               prevPrices={prevPrices}
               selectedKey={selectedKey}
               onSelect={setSelectedKey}
+              positionsByToken={positions.byToken}
               onBuy={(s) => {
                 // 点节点永远从槽位自己的那一侧开始；上一次在弹窗里切的侧不带过来
                 setPickedKey(s.key)
@@ -275,60 +402,6 @@ function GraphPage() {
           )}
         </section>
 
-        {/* 右：比赛信息 + 钱包 + 订单 */}
-        {/* 侧栏自己滚：窄窗口下三块面板会超过视口高度，
-            让它独立滚动，不牵连画布的高度计算 */}
-        {/* 窄屏时占满宽度并跟着 main 一起滚；宽屏时固定 288px 自己滚 */}
-        <aside className="flex w-full shrink-0 flex-col gap-3 lg:w-72 lg:overflow-y-auto">
-          {match && graph && (
-            <Panel title="本场">
-              <div className="space-y-1.5 text-xs">
-                <LeagueRow code={match.leagueCode} icon={match.leagueIcon} />
-                <KV k="盘口" v={`${graph.stats.markets}（${match.sources.length} 个子赛事）`} />
-                <KV k="节点 / 边" v={`${graph.nodes.length} / ${graph.edges.length}`} />
-                <KV k="划分组" v={String(graph.groups.length)} />
-                <KV
-                  k="违约"
-                  v={graph.stats.violations > 0 ? `${graph.stats.violations} 处` : '无'}
-                />
-                <QuoteRow wsState={wsState} quotedCount={quotedCount} />
-              </div>
-              <p className="mt-2 text-[10px] leading-snug text-muted-foreground">
-                {quotedCount > 0
-                  ? '有实时报价的节点显示真实买卖盘，可用来下单；其余仍是 Gamma 快照（上一次成交价），画布上标着「快照」。'
-                  : '当前全是 Gamma 快照（上一次成交价），不是可成交的买卖盘。赛前盘口常常没有挂单，这是正常的。'}
-              </p>
-            </Panel>
-          )}
-
-          <WalletPanel />
-
-          <Panel title="订单">
-            {pickedNode && picked && pickedSide?.tokenId ? (
-              <div className="space-y-1.5 text-xs">
-                <KV k="盘口" v={picked.label} />
-                <KV k="方向" v={pickedSide.name} />
-                <KV
-                  k="现价"
-                  v={`${formatTickPrice(
-                    sideMid(pickedSide),
-                    tickByToken[pickedSide.tokenId] ?? DEFAULT_TICK,
-                  )}${tickByToken[pickedSide.tokenId] === '0.001' ? '（0.001 档）' : ''}`}
-                />
-                <KV k="报价" v={pickedSide.quoted ? '实时双边盘' : '快照（上一次成交价）'} />
-                <button
-                  type="button"
-                  onClick={() => setOrderOpen(true)}
-                  className="mt-1.5 w-full rounded-md border border-primary/40 bg-primary/10 px-2 py-1.5 text-[11px] font-medium text-primary hover:bg-primary/20"
-                >
-                  {orderOpen ? '下单面板已打开' : '打开下单面板'}
-                </button>
-              </div>
-            ) : (
-              <p className="text-xs text-muted-foreground">点图上绑了盘口的节点下单。</p>
-            )}
-          </Panel>
-        </aside>
       </main>
 
       {/* 下单弹窗。挂在页面根上而不是节点 onClick 那一刻就地展开：
@@ -349,6 +422,9 @@ function GraphPage() {
             marketLabel={`${picked.label} · ${pickedSide.name}`}
             marketQuestion={pickedNode.questionZh || pickedNode.questionEn || pickedNode.desc.label}
             eventTitle={graph.title}
+            // 按盘口查订单只认 conditionId —— data-api 的 `asset=`（tokenId）参数是
+            // 静默忽略的，传了会拿回全部盘口的数据（见 lib/positions.ts 顶部）
+            conditionId={pickedNode.conditionId}
             sides={pickedSides}
             onSelectSide={(s) => {
               setPickedSideName(s.name)
@@ -367,6 +443,20 @@ function GraphPage() {
   )
 }
 
+/** 顶栏的汉堡图标。三条线而已，用内联 SVG 而不是再装一个图标库 */
+function MenuIcon() {
+  return (
+    <svg viewBox="0 0 16 16" className="size-4" aria-hidden="true">
+      <path
+        d="M2 4.5h12M2 8h12M2 11.5h12"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinecap="round"
+      />
+    </svg>
+  )
+}
+
 function Centered({ children }: { children: React.ReactNode }) {
   return (
     // 不写 min-h-[70vh]：那会把 section 顶出确定高度，破坏画布的尺寸测量
@@ -376,86 +466,3 @@ function Centered({ children }: { children: React.ReactNode }) {
   )
 }
 
-function KV({ k, v }: { k: string; v: string }) {
-  return (
-    <div className="flex items-baseline justify-between gap-2">
-      <span className="shrink-0 text-muted-foreground">{k}</span>
-      <span className="truncate text-right font-mono text-foreground">{v}</span>
-    </div>
-  )
-}
-
-/** 一侧的中价；只有单边时用那一边，都没有退回 Gamma 快照价。与 resolveTemplate 给槽位算 price 的规则一致 */
-function sideMid(s: GraphSide): number | null {
-  if (s.bid != null && s.ask != null) return (s.bid + s.ask) / 2
-  return s.bid ?? s.ask ?? s.price
-}
-
-/**
- * 联赛一行：徽标 + 中文名。
- *
- * 徽标用 Gamma 给的 URL（event.image 指向 soccer-leagues/<code>.png），
- * 不自己存 —— 那是唯一免费可靠的图标来源。
- *
- * 代码查不到译名时显示「未知联赛」而不是显示代码本身：`col1` 对用户没有
- * 任何意义，而缺哪些代码由管理页面的缺失列表负责暴露。
- */
-/**
- * 报价来源一行：实时 / 快照。
- *
- * 这一行是**能不能下单**的判据，不是装饰。只看画布上的 `quoted` 标记不够 ——
- * applyLivePrices 会就地改节点，标记一旦置 true 就不会退回，断线后画布仍显示
- * 「实时」而价格早已过期。所以真相在这里：WS 状态 + 拿到双边盘的 token 数。
- *
- * 赛前 0 实时是**正常**的，不是故障：那时盘口常常一张挂单都没有。
- * 所以 0 的时候不报红，只说明现在是快照。
- */
-function QuoteRow({ wsState, quotedCount }: { wsState: ConnState; quotedCount: number }) {
-  const live = quotedCount > 0
-  const text = live
-    ? `实时 ${quotedCount} 档`
-    : wsState === 'open'
-      ? '已连接，暂无挂单'
-      : wsState === 'connecting'
-        ? '连接中…'
-        : '快照'
-  return (
-    <div className="flex items-baseline justify-between gap-2">
-      <span className="shrink-0 text-muted-foreground">报价</span>
-      <span className="flex min-w-0 items-center gap-1.5">
-        <span
-          className={cn(
-            'size-1.5 shrink-0 rounded-full',
-            live ? 'bg-success' : wsState === 'open' ? 'bg-warning' : 'bg-muted-foreground',
-          )}
-        />
-        <span className="truncate text-right text-foreground">{text}</span>
-      </span>
-    </div>
-  )
-}
-
-function LeagueRow({ code, icon }: { code: string | null; icon: string | null }) {
-  const zh = translateLeague(code)
-  return (
-    <div className="flex items-baseline justify-between gap-2">
-      <span className="shrink-0 text-muted-foreground">联赛</span>
-      <span className="flex min-w-0 items-center gap-1.5">
-        {icon && (
-          <img
-            src={icon}
-            alt=""
-            className="size-4 shrink-0 rounded-sm object-contain"
-            // 图挂了就藏掉，不要显示破图占位符
-            onError={(e) => {
-              e.currentTarget.style.display = 'none'
-            }}
-          />
-        )}
-        <span className="truncate text-right text-foreground">
-          {zh ?? (code ? '未知联赛' : '—')}
-        </span>
-      </span>
-    </div>
-  )
-}

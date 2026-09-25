@@ -108,6 +108,13 @@ export interface GoalImpact {
 export interface GraphNode {
   id: string
   marketId: string
+  /**
+   * 盘口的 conditionId。
+   *
+   * 查「这张盘我有什么持仓/成交」**只能**用它 —— data-api 的 `asset=<tokenId>`
+   * 参数是静默忽略的（传了返回全量），详见 lib/positions.ts 顶部。
+   */
+  conditionId: string | null
   desc: MarketDescriptor
   questionEn: string
   questionZh: string | null

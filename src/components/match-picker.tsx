@@ -1,5 +1,16 @@
 /**
- * 比赛选择器：一个按钮 + 一层浮层，浮层里是「搜索 + 状态筛选 + 比赛卡片列表」。
+ * 比赛选择器：搜索 + 状态筛选 + 比赛列表，直接铺在左栏的「比赛」分区里。
+ *
+ * ## 为什么不再是按钮 + 浮层
+ *
+ * 上一版是 header 里的一个按钮加一层浮层，两个硬伤：
+ *   1. header 是横的，按钮在窄屏只有 max-w-[150px]，选中那场的标题会被截断 ——
+ *      屏幕上唯一说明「现在看的是哪场」的地方反而显示不全。
+ *   2. 手机上点开浮层会盖住大半张图，观感很突兀。
+ * 列表改为常驻左栏后这两条一起消失：宽度够用，选中态一直看得见。
+ *
+ * 浮层那套簿记（开合、点外关闭、Escape、z 序）也一并去掉 ——
+ * 一个展示列表的控件不该带这些。
  *
  * ## 为什么不再是原生 <select>
  *
@@ -12,15 +23,16 @@
  * （trader/frontend/src/pages/soccer.tsx）：中文队名 + 英文副行 +
  * 「联赛 · 开赛时间 · 成交额」+ 状态徽标。
  *
- * ## 为什么是浮层而不是左侧栏
+ * ## 为什么是分页而不是让列表自己滚
  *
- * dapp 的既有前提是「关系图占绝对主位」（见 App.tsx 顶部注释）：右侧栏只有
- * 288px，再插一列比赛列表会把画布挤窄。浮层不参与布局，画布的 ResizeObserver
- * 也量不到它，开合不会触发缩放重算。
+ * 上一版给列表加了 max-h + overflow-y-auto，两个问题：
+ *   1. 滚动条会随比赛数量出现又消失，左栏的可用宽度跟着抖一下；
+ *   2. 「还有多少场没看到」滚动条答不了 —— 人得先滚到底才知道。
+ * 固定 7 行一页之后，页码直接把「第几页 / 共几页」摆出来。
  *
- * 真要改成侧栏，把下面浮层里那段列表搬进 <aside> 即可，逻辑一行不用动。
+ * 左栏因此没有嵌套的滚动区：要么整栏装得下，要么整栏滚（浏览器那根常规滚动条）。
  */
-import { useEffect, useRef, useState } from 'react'
+import { useState } from 'react'
 import type { SoccerMatch } from '../lib/gamma'
 import { translateLeague, translateTeam } from '../lib/dict'
 import { cn, formatKickoff, formatVolume } from '../lib/utils'
@@ -31,134 +43,171 @@ import {
   filterMatches,
   matchStatus,
   searchMatches,
+  sortForList,
   type MatchFilter,
 } from '../lib/match-list'
+import { matchHasPosition } from '../lib/positions'
+
+/**
+ * 标签页。比 `MatchFilter` 多一个 `mine` —— 那个不是开赛状态，而是「这场跟我有关」，
+ * 判据来自持仓（lib/positions.ts 的 matchHasPosition），所以不能并进 filterMatches
+ * （那个函数只认状态，见 lib/match-list.ts）。多出来的那一个在组件里就地筛。
+ *
+ * ⚠️ **「我的」只含持仓，不含挂单。** 挂单（未成交委托）公开接口拿不到：只有 CLOB 的
+ * 鉴权接口有，读它得先让用户签一次名 —— 弹窗里那段「持仓中」正是为此做成按需加载的。
+ * 想在列表上标挂单，就得先接受「打开列表要签一次名」，那是另一个取舍。
+ */
+type Tab = MatchFilter | 'mine'
 
 /**
  * 筛选标签。原项目那份还有「关注」「重点」：前者要一份持久化的关注列表，
  * 后者是「进行中 + 即将开始」的合称 —— dapp 没有关注，两个都省掉，
  * 状态之间由「全部」兜住。
  */
-const TABS: Array<{ key: MatchFilter; label: string }> = [
+const TABS: Array<{ key: Tab; label: string }> = [
   { key: 'all', label: '全部' },
+  { key: 'mine', label: '我的' },
   { key: 'live', label: '进行中' },
   { key: 'not_started', label: '即将开始' },
   { key: 'ended', label: '已结束' },
 ]
 
+/** 每页场数。凭手感定的：一页大致填满左栏、又不需要内层滚动。
+    行高本身随「有没有英文副行」浮动，所以这个数不必精确 */
+const PAGE_SIZE = 7
+
 export function MatchPicker({
   matches,
   matchId,
   onPick,
+  positionEventIds,
 }: {
   matches: SoccerMatch[]
   matchId: string | null
   onPick: (id: string) => void
+  /**
+   * 有持仓的子赛事 id 集合。命中就在那一行加个「持仓」徽标。
+   *
+   * 不传或空集就是没有标记 —— 没连钱包、读不到持仓、确实没有仓位，三者在这里
+   * 表现相同（见 lib/use-positions.ts）。
+   */
+  positionEventIds?: ReadonlySet<string>
 }) {
-  const [open, setOpen] = useState(false)
   const [q, setQ] = useState('')
-  const [filter, setFilter] = useState<MatchFilter>('all')
-  const inputRef = useRef<HTMLInputElement>(null)
+  const [filter, setFilter] = useState<Tab>('all')
+  const [page, setPage] = useState(1)
 
-  // 打开就聚焦搜索框：点开这个控件的下一步十有八九是打字
-  useEffect(() => {
-    if (open) inputRef.current?.focus()
-  }, [open])
-
-  const current = matches.find((m) => m.id === matchId) ?? null
   const empty = matches.length === 0
 
   // 两个都不 useMemo：三十来场、几次字符串拼接的量级，比缓存的簿记还便宜。
   // 顺带绕开了「缓存住旧的开赛状态」—— 状态随时间变，算在渲染里才跟得上。
   const counts = countStatuses(matches)
-  const visible = searchMatches(filterMatches(matches, filter), q)
+  /**
+   * 这场比赛有没有我的仓位（含已完结的）。
+   *
+   * 判据是 `eventIds` 与持仓的 eventId **有交集**，而不是只比主赛事 id：仓位的
+   * 大部分落在「- More Markets」那一族里（大小球就在那），只比主赛事会漏掉它们。
+   */
+  const hasHolding = (m: SoccerMatch) =>
+    positionEventIds != null && matchHasPosition(m.eventIds, positionEventIds)
+  const mineCount = positionEventIds == null ? 0 : matches.filter(hasHolding).length
+
+  // 展示顺序：没结束的按开赛时间升序在前，已结束的沉底（见 sortForList）。
+  // matches 本身的顺序是重要性排序（子赛事多的在前），只留给「没有指定时的兜底」
+  const filtered = filter === 'mine' ? matches.filter(hasHolding) : filterMatches(matches, filter)
+  const visible = sortForList(searchMatches(filtered, q))
+
+  // 页数至少 1：空列表也得是「第 1 / 1 页」，否则页码处会显示 0
+  const pageCount = Math.max(1, Math.ceil(visible.length / PAGE_SIZE))
+  /**
+   * 夹一下再用，而不是把 page 存成「永远合法」的。
+   *
+   * 越界是常态：筛到只剩 3 场时，page 可能还停在 3。用 effect 监听再回退要多
+   * 渲染一轮，中间那一轮还会闪一次空列表；夹在渲染里算，同一轮就是对的。
+   */
+  const current = Math.min(page, pageCount)
+  const rows = visible.slice((current - 1) * PAGE_SIZE, current * PAGE_SIZE)
 
   return (
-    <div className="relative min-w-0">
-      <button
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        disabled={empty}
-        className={cn(
-          'flex max-w-[150px] items-center gap-1 rounded-md border border-border bg-input px-2 py-1 text-xs sm:max-w-[300px]',
-          empty ? 'text-muted-foreground' : 'text-foreground',
-        )}
-      >
-        {/* min-w-0 是必须的：flex 子项的 min-width:auto 会撑破上面的 max-w，
-            手机上就会溢出到 header 之外 */}
-        <span className="min-w-0 truncate">
-          {empty
-            ? '（无比赛）'
-            : current
-              ? `${translateTeam(current.home)} vs ${translateTeam(current.away)}（${current.eventIds.length} 个子赛事）`
-              : '选一场比赛'}
-        </span>
-        <span className="shrink-0 text-muted-foreground">▾</span>
-      </button>
+    <div className="space-y-2">
+      <input
+        value={q}
+        onChange={(e) => {
+          setQ(e.target.value)
+          // 换了条件就回第一页：停在第 3 页看一批新结果，一上来就是空的
+          setPage(1)
+        }}
+        placeholder="搜队名 / 联赛（中英文都行）"
+        className="w-full rounded-md border border-border bg-input px-2 py-1 text-xs text-foreground placeholder:text-muted-foreground"
+      />
 
-      {open && (
-        <>
-          {/* 点外面关掉。与 connect-wallet 的钱包菜单同一个做法：
-              铺一层透明的固定层压住页面，z 比面板低 */}
-          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
-          <div
-            onKeyDown={(e) => {
-              if (e.key === 'Escape') setOpen(false)
-            }}
-            className="absolute right-0 z-50 mt-1 w-[min(92vw,26rem)] overflow-hidden rounded-lg border border-border bg-popover shadow-xl"
-          >
-            <div className="space-y-2 border-b border-border p-2">
-              <input
-                ref={inputRef}
-                value={q}
-                onChange={(e) => setQ(e.target.value)}
-                placeholder="搜队名 / 联赛（中英文都行）"
-                className="w-full rounded-md border border-border bg-input px-2 py-1 text-xs text-foreground placeholder:text-muted-foreground"
-              />
-              <div className="flex flex-wrap gap-1">
-                {TABS.map((t) => {
-                  const active = filter === t.key
-                  const n = t.key === 'all' ? matches.length : counts[t.key]
-                  return (
-                    <button
-                      key={t.key}
-                      type="button"
-                      onClick={() => setFilter(t.key)}
-                      className={cn(
-                        'rounded-md border px-2 py-1 text-[10px] font-medium transition-colors',
-                        active
-                          ? 'border-primary bg-primary/10 text-primary'
-                          : 'border-border text-foreground hover:bg-muted',
-                      )}
-                    >
-                      {t.label}（{n}）
-                    </button>
-                  )
-                })}
-              </div>
-            </div>
-
-            <div className="max-h-[60vh] space-y-1.5 overflow-y-auto p-2">
-              {visible.length === 0 ? (
-                <p className="p-3 text-center text-xs text-muted-foreground">
-                  {empty ? '时间窗内没有比赛' : '没有匹配的比赛'}
-                </p>
-              ) : (
-                visible.map((m) => (
-                  <MatchRow
-                    key={m.id}
-                    match={m}
-                    active={m.id === matchId}
-                    onPick={() => {
-                      onPick(m.id)
-                      setOpen(false)
-                    }}
-                  />
-                ))
+      <div className="flex flex-wrap gap-1">
+        {TABS.map((t) => {
+          const active = filter === t.key
+          const n = t.key === 'all' ? matches.length : t.key === 'mine' ? mineCount : counts[t.key]
+          return (
+            <button
+              key={t.key}
+              type="button"
+              onClick={() => {
+                setFilter(t.key)
+                setPage(1)
+              }}
+              className={cn(
+                'rounded-md border px-2 py-1 text-[10px] font-medium transition-colors',
+                active
+                  ? 'border-primary bg-primary/10 text-primary'
+                  : 'border-border text-foreground hover:bg-muted',
               )}
-            </div>
-          </div>
-        </>
+            >
+              {t.label}（{n}）
+            </button>
+          )
+        })}
+      </div>
+
+      {/* 不设 max-h：一页就是 7 行，列表本身不需要滚动 */}
+      <div className="space-y-1.5">
+        {rows.length === 0 ? (
+          <p className="p-3 text-center text-xs text-muted-foreground">
+            {empty ? '时间窗内没有比赛' : '没有匹配的比赛'}
+          </p>
+        ) : (
+          rows.map((m) => (
+            <MatchRow
+              key={m.id}
+              match={m}
+              active={m.id === matchId}
+              held={hasHolding(m)}
+              onPick={() => onPick(m.id)}
+            />
+          ))
+        )}
+      </div>
+
+      {/* 只有一页时整条不渲染：一个永远点不动的翻页器只是噪音 */}
+      {pageCount > 1 && (
+        <div className="flex items-center justify-between gap-2 pt-0.5">
+          <button
+            type="button"
+            onClick={() => setPage(current - 1)}
+            disabled={current <= 1}
+            className="rounded-md border border-border px-2 py-1 text-[10px] text-foreground hover:bg-muted disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent"
+          >
+            上一页
+          </button>
+          <span className="tnum text-[10px] text-muted-foreground">
+            {current} / {pageCount}
+          </span>
+          <button
+            type="button"
+            onClick={() => setPage(current + 1)}
+            disabled={current >= pageCount}
+            className="rounded-md border border-border px-2 py-1 text-[10px] text-foreground hover:bg-muted disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent"
+          >
+            下一页
+          </button>
+        </div>
       )}
     </div>
   )
@@ -176,10 +225,13 @@ export function MatchPicker({
 function MatchRow({
   match,
   active,
+  held,
   onPick,
 }: {
   match: SoccerMatch
   active: boolean
+  /** 这场比赛有仓位（含已完结的） */
+  held: boolean
   onPick: () => void
 }) {
   const homeZh = translateTeam(match.home)
@@ -222,6 +274,13 @@ function MatchRow({
           >
             {STATUS_LABEL[status]}
           </span>
+          {/* 持仓徽标。用品牌色而不是语义色：这不是一个「好 / 坏」的状态，
+              而是「这场跟我有关」—— 与选中态同一个强调色，一眼能跟状态徽标分开 */}
+          {held && (
+            <span className="rounded border border-primary/30 bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">
+              持仓
+            </span>
+          )}
           <span className="tnum text-[10px] text-muted-foreground">{match.eventIds.length} 个子赛事</span>
         </div>
       </div>

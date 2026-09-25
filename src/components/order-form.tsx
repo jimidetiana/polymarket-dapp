@@ -15,7 +15,6 @@
 import { useEffect, useState } from 'react'
 import { cn } from '../lib/utils'
 import {
-  formatTickPercent,
   formatTickPrice,
   fromSteps,
   isPriceValid,
@@ -24,7 +23,7 @@ import {
   toSteps,
   type TickSize,
 } from '../lib/tick'
-import { feeBreakdown, formatFeeAmount, settleOf } from '../lib/fee'
+import { feeBreakdown, formatFeeAmount, formatMoney, settleOf } from '../lib/fee'
 import type { OrderKind, OrderSideName } from '../lib/clob-client'
 
 /** 与原项目同值。真正的下限还受 CLOB 的 minOrderSize 约束，由调用方传进来 */
@@ -40,7 +39,6 @@ export type OrderFormValues = {
 
 interface Props {
   outcomeName: string
-  marketQuestion: string
   /**
    * 可成交的价。**买看卖一、卖看买一** —— 只有一个价是不对的：
    * 这两者差着一个点差，用买一去估买单的成交价会系统性偏乐观。
@@ -74,7 +72,6 @@ interface Props {
 
 export function OrderForm({
   outcomeName,
-  marketQuestion,
   bestBid,
   bestAsk,
   fallbackPrice,
@@ -171,17 +168,20 @@ export function OrderForm({
   const overBalance = side === 'BUY' && maxAmount != null && cost.totalUsd > maxAmount
   const valid = size >= minShares && priceOk && !noMarketSide && !overBalance && total >= MIN_AMOUNT
 
+  // 按钮 disabled 时**必须**给出原因。这些分支正好覆盖 valid 的每一项否定，
+  // 所以只要 !valid 就一定有一句话（之前 `size > 0 &&` 的护栏会在 size 为 0/空时
+  // 把「最少 N 份」吞掉，导致按钮灰着却无提示——已去掉那层护栏）。
   const error = noMarketSide
     ? `此刻没有${side === 'BUY' ? '卖盘' : '买盘'}，市价${side === 'BUY' ? '买' : '卖'}吃不到东西。改成限价挂一单，或者等有报价再来。`
-    : !priceOk
-      ? `价格必须是 ${formatTickPrice(pb.min, tick)} ~ ${formatTickPrice(pb.max, tick)} 且落在 ${tick} 的网格上`
-      : size > 0 && size < minShares
-        ? `最少 ${minShares} 份`
+    : size < minShares
+      ? `最少 ${minShares} 份（现在 ${Number.isFinite(size) ? size : 0}）`
+      : !priceOk
+        ? `价格必须是 ${formatTickPrice(pb.min, tick)} ~ ${formatTickPrice(pb.max, tick)} 且落在 ${tick} 的网格上`
         : overBalance
           ? feeBps > 0
             ? `超出可用余额 $${(maxAmount ?? 0).toFixed(2)}（本金 $${cost.notionalUsd.toFixed(2)} + 手续费 ${formatFeeAmount(cost.feeUsd)}）`
             : `超出可用余额 $${(maxAmount ?? 0).toFixed(2)}`
-          : size > 0 && total < MIN_AMOUNT
+          : total < MIN_AMOUNT
             ? `总额至少 $${MIN_AMOUNT}`
             : null
 
@@ -205,19 +205,6 @@ export function OrderForm({
 
   return (
     <div className="space-y-3">
-      <div className="rounded-lg border border-border bg-background p-3">
-        <p className="line-clamp-2 text-[11px] leading-snug text-muted-foreground">{marketQuestion}</p>
-        <div className="mt-1.5 flex items-baseline justify-between gap-2">
-          <span className="text-xs font-medium text-foreground">{outcomeName}</span>
-          <span className="font-mono text-lg font-bold tnum text-primary">
-            {formatTickPercent(price, tick)}
-          </span>
-        </div>
-        <p className="mt-0.5 text-right text-[10px] text-muted-foreground">
-          单价 {formatTickPrice(price, tick)} · tick {tick}
-        </p>
-      </div>
-
       {/* 买入 / 卖出 */}
       <div className="grid grid-cols-2 gap-2">
         {(['BUY', 'SELL'] as const).map((s) => (
@@ -381,18 +368,11 @@ export function OrderForm({
         {feeBps > 0 && (
           <SumRow k={`手续费（${cost.rateLabel}）`} v={formatFeeAmount(cost.feeUsd)} />
         )}
-        <SumRow k={settle.label} v={`$${settle.usd.toFixed(2)}`} strong />
+        <SumRow k={settle.label} v={formatMoney(settle.usd)} strong />
         {maxAmount != null && side === 'BUY' && (
           <SumRow k="可用余额" v={`$${maxAmount.toFixed(2)}`} />
         )}
       </div>
-
-      {feeBps > 0 && (
-        <p className="text-[10px] leading-snug text-muted-foreground">
-          手续费由本平台收取（{cost.rateLabel}），已含在上面「合计」里。
-          Polymarket 官方站不收这笔钱。
-        </p>
-      )}
 
       {(error || blocked) && (
         <p className="text-[11px] leading-snug text-warning">{blocked || error}</p>

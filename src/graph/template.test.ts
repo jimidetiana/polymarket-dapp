@@ -114,6 +114,97 @@ test('中心三节点是 goals 类型且不绑盘口', () => {
   }
 })
 
+// ==================== 坐标规整性 ====================
+
+/**
+ * 全图轴线。中心三节点、「平」、两翼、让球四列都关于它镜像。
+ *
+ * 下面这几个测试断言的是**性质**（镜像 / 等步长 / 齐平），不是把坐标抄一遍
+ * —— 抄一遍只能证明「文件没被改过」，证明不了「摆得齐」。
+ */
+const AXIS_X = 693
+const slot = (k: string) => TEMPLATE_SLOTS.find((s) => s.key === k)!
+
+test('成对的槽位关于轴线镜像，且两侧在同一行', () => {
+  const pairs: Array<[string, string]> = [
+    ['goals_home', 'goals_away'],
+    ['ml_home', 'ml_away'],
+    ['home_0.5', 'away_0.5'],
+    ['home_1.5', 'away_1.5'],
+    ['home_2.5', 'away_2.5'],
+    // 让球同一行的两端互为镜像：第 1 列 ↔ 第 4 列、第 2 列 ↔ 第 3 列
+    ['sp_home_-1.5', 'sp_away_+1.5'],
+    ['sp_home_+1.5', 'sp_away_-1.5'],
+    ['sp_home_-2.5', 'sp_away_+2.5'],
+    ['sp_home_+2.5', 'sp_away_-2.5'],
+  ]
+  for (const [l, r] of pairs) {
+    assert.equal(slot(l).x + slot(r).x, AXIS_X * 2, `${l} / ${r} 不关于轴线镜像`)
+    assert.equal(slot(l).y, slot(r).y, `${l} / ${r} 不在同一行`)
+  }
+})
+
+test('全场大小球梯子：只有互为镜像的两列，且纵向等步长', () => {
+  const ladder = ['total_0.5', 'total_1.5', 'total_2.5', 'total_3.5', 'total_4.5', 'total_5.5'].map(slot)
+  const xs = [...new Set(ladder.map((s) => s.x))].sort((a, b) => a - b)
+  assert.equal(xs.length, 2, '梯子应当只有左右两列')
+  assert.equal(xs[0] + xs[1], AXIS_X * 2, '两列不关于轴线镜像')
+  // 自下而上左右交替，不能有哪一级站错列
+  ladder.forEach((s, i) => {
+    assert.equal(s.x, i % 2 === 0 ? xs[0] : xs[1], `${s.key} 破坏了左右交替`)
+  })
+  // 等步长：相邻的 y 差只允许有一个值（原稿有 145 / 163 / 206 三种）
+  const steps = ladder.slice(1).map((s, i) => ladder[i].y - s.y)
+  assert.equal(new Set(steps).size, 1, `纵向步长不齐：${steps.join(' / ')}`)
+  assert.ok(steps[0] > 0, '梯子应当自下而上')
+})
+
+test('两翼是同一把梯子：|Δx| 与 Δy 一致，只是方向相反', () => {
+  const shape = ([a, b, c]: [string, string, string]) => {
+    const [p, q, r] = [slot(a), slot(b), slot(c)]
+    return [Math.abs(q.x - p.x), q.y - p.y, Math.abs(r.x - q.x), r.y - q.y].join(',')
+  }
+  assert.equal(
+    shape(['home_0.5', 'home_1.5', 'home_2.5']),
+    shape(['away_0.5', 'away_1.5', 'away_2.5']),
+    '左右两翼步长不一致',
+  )
+})
+
+test('让球四列等距对称、两行各自齐平', () => {
+  const row1 = ['sp_home_-1.5', 'sp_home_+1.5', 'sp_away_-1.5', 'sp_away_+1.5'].map(slot)
+  const row2 = ['sp_home_-2.5', 'sp_home_+2.5', 'sp_away_-2.5', 'sp_away_+2.5'].map(slot)
+  for (const [name, row] of [['第一行', row1], ['第二行', row2]] as const) {
+    assert.equal(new Set(row.map((s) => s.y)).size, 1, `${name}不齐平`)
+  }
+  // 同一列的两行必须同 x（原稿 sp_home_-1.5 比同列的下一个高 15）
+  row1.forEach((s, i) => assert.equal(s.x, row2[i].x, `${s.key} 与同列的下一个不同列`))
+  // 第 1 / 4 列、第 2 / 3 列各自互为镜像
+  assert.equal(row1[0].x + row1[3].x, AXIS_X * 2)
+  assert.equal(row1[1].x + row1[2].x, AXIS_X * 2)
+})
+
+test('没有哪两个槽位靠得比 200 更近：规整不会把节点挤小', () => {
+  let best = Infinity
+  let who = ''
+  for (let i = 0; i < TEMPLATE_SLOTS.length; i += 1) {
+    for (let j = i + 1; j < TEMPLATE_SLOTS.length; j += 1) {
+      const a = TEMPLATE_SLOTS[i]
+      const b = TEMPLATE_SLOTS[j]
+      const d = Math.hypot(a.x - b.x, a.y - b.y)
+      if (d < best) {
+        best = d
+        who = `${a.key} / ${b.key}`
+      }
+    }
+  }
+  // 节点半径 = 最近两点间距 × R_OF_GAP(0.42)（见 lib/layout.ts），所以间距一紧，
+  // 全图的字就跟着变小。规整前最近的一对 211.8，规整后 212.4（goals_total ↔
+  // goals_home|away），没有变紧 —— 这条断言就是防止以后调坐标时悄悄挤紧，
+  // 留了一点余量卡在 200。
+  assert.ok(best >= 200, `最近的一对 ${who} 只有 ${best.toFixed(1)}，太挤了`)
+})
+
 // ==================== 缺盘口时槽位保留 ====================
 
 test('比赛没挂任何盘口时，26 个槽位仍在原位，只是 nodeId 为空', () => {
@@ -126,7 +217,7 @@ test('比赛没挂任何盘口时，26 个槽位仍在原位，只是 nodeId 为
   }
   // 位置不因缺数据而变
   const t35 = slots.find((s) => s.key === 'total_3.5')!
-  assert.equal(t35.x, 813)
+  assert.equal(t35.x, 825)
 })
 
 // ==================== 大小球绑定 ====================

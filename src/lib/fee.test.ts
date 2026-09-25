@@ -1,9 +1,10 @@
 import { describe, it, expect } from 'vitest'
 import {
   bpsLabel,
-  feeCentsOf,
+  feeUsdOf,
   feeBreakdown,
   formatFeeAmount,
+  formatMoney,
   maxBpsOf,
   settleOf,
   BUILDER_FEE_RATES,
@@ -53,47 +54,49 @@ describe('费率文案', () => {
   })
 })
 
-describe('手续费金额（分）', () => {
-  it('$100 × 5bps = 5 分', () => {
-    expect(feeCentsOf(100, 5)).toBe(5)
+describe('精确手续费（美元，不取整到分）', () => {
+  it('$100 × 5bps = $0.05', () => {
+    expect(feeUsdOf(100, 5)).toBe(0.05)
   })
 
-  it('$1000 × 5bps = 50 分', () => {
-    expect(feeCentsOf(1000, 5)).toBe(50)
+  it('$1000 × 5bps = $0.5', () => {
+    expect(feeUsdOf(1000, 5)).toBe(0.5)
   })
 
-  it('向上取整：$10 × 5bps 实际 0.5 分，给 1 分', () => {
-    // 这个方向是刻意的：少报的是我们自己的收入，而且用户看到的总额会低于实际扣款
-    expect(feeCentsOf(10, 5)).toBe(1)
+  it('小额单如实给分以下的值，不再向上取整到 1 分', () => {
+    // 这条是本次修改的核心：$10 × 5bps 实收 $0.005，就给 0.005，不撑成 0.01。
+    expect(feeUsdOf(10, 5)).toBe(0.005)
+    // $2.90 × 5bps = $0.00145（与 /builder/trades 回执里的 builderFee 对得上）
+    expect(feeUsdOf(2.9, 5)).toBe(0.00145)
   })
 
-  it('本该整分的值不会被浮点误差顶上去', () => {
-    // $20 × 5bps = 1 分。若少了 1e-9 那个容差，0.9999999 会被 ceil 成 2 分
-    expect(feeCentsOf(20, 5)).toBe(1)
-    // $200 × 5bps = 10 分
-    expect(feeCentsOf(200, 5)).toBe(10)
-    // $10000 × 5bps = 500 分
-    expect(feeCentsOf(10_000, 5)).toBe(500)
+  it('对齐到 USDC 的 6 位小数', () => {
+    // $2.90 × 5bps 在浮点下是 0.00014500000…，round 到 6 位得干净的 0.00145
+    expect(feeUsdOf(2.9, 5)).toBe(0.00145)
+    expect(feeUsdOf(200, 5)).toBe(0.1)
   })
 
   it('费率 0 或金额 0 时不收费', () => {
-    expect(feeCentsOf(100, 0)).toBe(0)
-    expect(feeCentsOf(0, 5)).toBe(0)
-    expect(feeCentsOf(-5, 5)).toBe(0)
+    expect(feeUsdOf(100, 0)).toBe(0)
+    expect(feeUsdOf(0, 5)).toBe(0)
+    expect(feeUsdOf(-5, 5)).toBe(0)
   })
 })
 
 describe('手续费显示', () => {
-  it('小于 1 分时给 4 位小数，不能显示成 $0.00', () => {
-    // 5 bps 下 $10 的单是 $0.005。显示 $0.00 等于「界面说免费，实际扣钱」
-    expect(formatFeeAmount(0.005)).toBe('$0.0050')
+  it('小于 1 分时精确到分以下，不能显示成 $0.00', () => {
+    // 5 bps 下 $10 的单是 $0.005。显示 $0.00 等于「界面说免费，实际扣钱」；
+    // 也不再撑成 $0.01 —— 如实给 $0.005。
+    expect(formatFeeAmount(0.005)).toBe('$0.005')
+    expect(formatFeeAmount(0.00145)).toBe('$0.00145')
     expect(formatFeeAmount(0.0001)).toBe('$0.0001')
   })
 
-  it('1 分及以上按两位显示', () => {
+  it('1 分及以上按分显示，有分以下尾数则带出', () => {
     expect(formatFeeAmount(0.05)).toBe('$0.05')
     expect(formatFeeAmount(0.5)).toBe('$0.50')
     expect(formatFeeAmount(5)).toBe('$5.00')
+    expect(formatFeeAmount(0.0525)).toBe('$0.0525')
   })
 
   it('0 显示 $0.00', () => {
@@ -101,14 +104,32 @@ describe('手续费显示', () => {
   })
 })
 
+describe('金额显示 formatMoney', () => {
+  it('干净到分的值给两位小数', () => {
+    expect(formatMoney(100.05)).toBe('$100.05')
+    expect(formatMoney(5)).toBe('$5.00')
+    expect(formatMoney(99.95)).toBe('$99.95')
+  })
+
+  it('有分以下尾数就带出，不把手续费吞掉', () => {
+    // $2.90 本金 + $0.00145 手续费的合计，不能被压成 $2.90
+    expect(formatMoney(2.90145)).toBe('$2.90145')
+    expect(formatMoney(5.0025)).toBe('$5.0025')
+  })
+
+  it('非法值给 $0.00', () => {
+    expect(formatMoney(Number.NaN)).toBe('$0.00')
+  })
+})
+
 describe('确认面板的数', () => {
-  it('小额单的手续费向上取整到分，不为 0', () => {
-    // $5 × 5bps = $0.0025 = 0.25 分。ceil → 1 分。
-    // 若这条变成 0，说明「向上取整」被改成了截断 —— 那会让手续费栏显示 $0.00
+  it('小额单的手续费精确到分以下，不再向上取整到分', () => {
+    // $5 × 5bps = $0.0025。旧实现 ceil 到 1 分（$0.01）——那是要修掉的偏差。
+    // 现在如实给 0.0025，合计带出分以下尾数。
     const b = feeBreakdown(10, 0.5, BUILDER_FEE_RATES.takerBps)
     expect(b.notionalUsd).toBe(5)
-    expect(b.feeUsd).toBe(0.01)
-    expect(b.totalUsd).toBe(5.01)
+    expect(b.feeUsd).toBe(0.0025)
+    expect(b.totalUsd).toBe(5.0025)
   })
 
   it('费率乘的是名义额：$100 本金 + 5bps → 合计 $100.05', () => {

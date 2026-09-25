@@ -44,6 +44,13 @@ export type GammaTag = { id?: string; slug?: string; label?: string }
 export type GammaMarket = {
   id: string
   question?: string
+  /**
+   * 盘口的链上 condition id。
+   *
+   * 查「这张盘我有没有仓位/成交」只能用它 —— data-api 的 `asset=<tokenId>` 参数是
+   * **静默忽略**的，见 lib/positions.ts 顶部。所以它要一路带到 ResolvedSlot 上。
+   */
+  conditionId?: string
   /** JSON 字符串数组，如 '["Yes","No"]' */
   outcomes?: string
   /** JSON 字符串数组 */
@@ -360,6 +367,9 @@ export function mergeIntoMatches(events: GammaEvent[]): SoccerMatch[] {
 
   // 子赛事多的排前面：盘口族多，图才画得完整（列表里没有盘口数，子赛事数是
   // 它最近的代理 —— 一族一个 event）。同样多的按成交额。
+  //
+  // 这是**重要性**排序，App 靠它挑默认选中的那场（matches[0]）。列表里翻页
+  // 看到的顺序不是这个 —— 那里按开赛时间排、已结束沉底（见 match-list 的 sortForList）。
   return out.sort(
     (a, b) => b.eventIds.length - a.eventIds.length || (b.volume ?? -1) - (a.volume ?? -1),
   )
@@ -403,6 +413,29 @@ export async function fetchMatchMarkets(eventIds: readonly string[]): Promise<Ga
 }
 
 /**
+ * 按赛事 id 拉一批**比赛**（不是盘口）—— 给「窗口外但有仓位」的那些用，
+ * 见 lib/match-list.ts 的 mergeMatchLists。
+ *
+ * id 已经是精确定位，所以**不加** active/closed 与时间窗：仓位所在的那场比赛常常
+ * 已经踢完、盘口早已 closed，加了筛选正好把它筛没。
+ *
+ * 只留足球：持仓里可能有别的品类（选举、加密货币…），它们不该出现在足球列表里。
+ * 这一步只能在客户端做 —— 服务端按 id 查的时候给不了品类筛选。
+ *
+ * 只取前 100 个 id（Gamma 一页上限）：横跨上百个赛事的持仓对「把有仓位的比赛补进
+ * 列表」这件事已经没有意义了，那是一屏列表装不下的量。
+ */
+export async function fetchMatchesByIds(eventIds: readonly string[]): Promise<SoccerMatch[]> {
+  if (eventIds.length === 0) return []
+  const events = await gammaGet<GammaEvent[]>('/events', {
+    id: eventIds.slice(0, PAGE_SIZE),
+    limit: PAGE_SIZE,
+  })
+  if (!Array.isArray(events)) throw new GammaError('Gamma 返回的赛事列表不是数组', false)
+  return mergeIntoMatches(events.filter(isSoccer))
+}
+
+/**
  * 从赛事标题里拆主客队。
  *
  * Polymarket 的足球赛事标题形如 "Chelsea vs. Barcelona"。
@@ -424,6 +457,7 @@ export function splitTeams(title?: string): { home: string; away: string } | nul
 export function toGraphMarketInput(m: GammaMarket) {
   return {
     id: String(m.id),
+    conditionId: m.conditionId ?? null,
     questionEn: m.question ?? '',
     questionZh: null,
     line: m.line ?? null,

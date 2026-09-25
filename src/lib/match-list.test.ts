@@ -10,10 +10,13 @@ import type { SoccerMatch } from './gamma'
 import {
   LIVE_WINDOW_MS,
   countStatuses,
+  defaultMatchId,
   filterMatches,
   matchHaystack,
   matchStatus,
+  mergeMatchLists,
   searchMatches,
+  sortForList,
 } from './match-list'
 
 /** 一场比赛的骨架，只填测试关心的字段 */
@@ -129,6 +132,27 @@ test('搜索文本里中英文都在，缺译名的队也不会从搜索里消�
   assert.ok(hay.includes('狼队'), hay)
 })
 
+test('列表顺序：没结束的按开赛时间升序在前，已结束的沉底', () => {
+  const ms = [
+    mk({ id: 'ended-old', home: 'A', away: 'B', endDate: '2026-09-17T16:00:00Z' }),
+    mk({ id: 'upcoming', home: 'C', away: 'D', endDate: '2026-09-18T20:00:00Z' }),
+    mk({ id: 'none', home: 'E', away: 'F' }),
+    mk({ id: 'live', home: 'G', away: 'H', endDate: '2026-09-18T12:00:00Z' }),
+    mk({ id: 'garbage', home: 'I', away: 'J', endDate: '不是时间' }),
+    mk({ id: 'ended-new', home: 'K', away: 'L', endDate: '2026-09-17T18:00:00Z' }),
+  ]
+  // now = 开哨后 30 分钟：live 还在进行中，17 号那两场都已经结束
+  assert.deepEqual(
+    sortForList(ms, AT(30 * MIN)).map((m) => m.id),
+    ['live', 'upcoming', 'none', 'garbage', 'ended-old', 'ended-new'],
+  )
+  // 入参是 react-query 的缓存，就地排序会把它也改掉
+  assert.deepEqual(
+    ms.map((m) => m.id),
+    ['ended-old', 'upcoming', 'none', 'live', 'garbage', 'ended-new'],
+  )
+})
+
 test('筛选与标签计数用同一个口径', () => {
   const now = AT(30 * MIN) // 1 号刚开哨，2 号还没开始
   const ms = [
@@ -150,4 +174,68 @@ test('筛选与标签计数用同一个口径', () => {
   assert.equal(counts.live, filterMatches(ms, 'live', now).length)
   assert.equal(counts.not_started, filterMatches(ms, 'not_started', now).length)
   assert.equal(counts.ended, filterMatches(ms, 'ended', now).length)
+})
+
+test('默认打开最近的那场未结束比赛，而不是列表顺序里的第一场', () => {
+  const ms = [
+    mk({ id: 'important', home: 'A', away: 'B', endDate: '2026-09-18T20:00:00Z' }),
+    mk({ id: 'nearest', home: 'C', away: 'D', endDate: '2026-09-18T13:00:00Z' }),
+    mk({ id: 'far', home: 'E', away: 'F', endDate: '2026-09-19T13:00:00Z' }),
+  ]
+  const now = AT(30 * MIN) // 1 号 12:00 开哨，now = 12:30
+  assert.equal(defaultMatchId(ms, now), 'nearest')
+  // 入参顺序不该影响结果：口径是「按时间取最近」，不是「取第一个」
+  assert.equal(defaultMatchId([...ms].reverse(), now), 'nearest')
+})
+
+test('默认那场就是列表第一行 —— 两处口径必须一致', () => {
+  const ms = [
+    mk({ id: 'ended-old', home: 'A', away: 'B', endDate: '2026-09-17T16:00:00Z' }),
+    mk({ id: 'live', home: 'C', away: 'D', endDate: '2026-09-18T12:00:00Z' }),
+    mk({ id: 'upcoming', home: 'E', away: 'F', endDate: '2026-09-18T14:00:00Z' }),
+  ]
+  const now = AT(30 * MIN)
+  assert.equal(defaultMatchId(ms, now), sortForList(ms, now)[0].id)
+})
+
+test('全都已结束时默认取刚踢完的那场', () => {
+  const ms = [
+    mk({ id: 'old', home: 'A', away: 'B', endDate: '2026-09-17T10:00:00Z' }),
+    mk({ id: 'newest', home: 'C', away: 'D', endDate: '2026-09-17T18:00:00Z' }),
+  ]
+  assert.equal(defaultMatchId(ms, AT(30 * MIN)), 'newest')
+})
+
+test('时间缺失的比赛不当默认值；一场都没有时给 null', () => {
+  const garbage = mk({ id: 'garbage', home: 'A', away: 'B', endDate: '不是时间' })
+  const ok = mk({ id: 'ok', home: 'C', away: 'D', endDate: '2026-09-18T13:00:00Z' })
+  assert.equal(defaultMatchId([garbage, ok], AT(30 * MIN)), 'ok')
+  // 一个时间可用的都没有时退回第一个：总比不选强，不选就是一张空画布
+  assert.equal(defaultMatchId([garbage]), 'garbage')
+  assert.equal(defaultMatchId([]), null)
+})
+
+test('合并窗口外的比赛：同标题的并 eventIds，新标题追加在后面', () => {
+  const base = [
+    mk({ id: '1', home: 'Everton FC', away: 'Wolverhampton Wanderers FC', eventIds: ['a'], volume: 100 }),
+  ]
+  const extra = [
+    // 同一场比赛（标题相同），另一族子赛事在窗口外 —— eventIds 必须并起来，
+    // 否则徽标只在窗口内那几条子赛事上命中
+    mk({ id: '1', home: 'Everton FC', away: 'Wolverhampton Wanderers FC', eventIds: ['b', 'a'], volume: 300 }),
+    mk({ id: '9', home: 'Chelsea FC', away: 'FC Barcelona', eventIds: ['z'] }),
+  ]
+  const out = mergeMatchLists(base, extra)
+  assert.equal(out.length, 2)
+  assert.deepEqual(out[0].eventIds, ['a', 'b'])
+  // 成交额两边各统计过一次，相加会翻倍，所以取大的
+  assert.equal(out[0].volume, 300)
+  assert.equal(out[1].id, '9')
+  // 入参是 react-query 的缓存，不该被就地改
+  assert.deepEqual(base[0].eventIds, ['a'])
+})
+
+test('合并：没有要补的就原样返回', () => {
+  const base = [mk({ id: '1', home: 'A', away: 'B' })]
+  assert.equal(mergeMatchLists(base, []), base)
 })

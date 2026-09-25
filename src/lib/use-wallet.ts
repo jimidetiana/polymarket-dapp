@@ -20,10 +20,11 @@ import { useQuery } from '@tanstack/react-query'
 import { lookupProxyWallet, PUSD_POLYGON, USDC_E_POLYGON, USDC_NATIVE_POLYGON } from './proxy-wallet'
 
 /**
- * 代理钱包地址。**只能问 Polymarket**，不能本地推导（CREATE2 salt 规则不公开）。
+ * 代理钱包（资金 Safe）地址：问 Polymarket gamma（`public-profile`）—— 这是**钱实际
+ * 所在**的地址（$4.80 pUSD 就在这个地址上），是余额显示的可靠真相来源。
  *
- * 查询 key 与历史保持一致（`['proxy-wallet', address]`），这样钱包面板与
- * 各个弹窗共享同一份缓存，不会因为落在不同组件里就重复请求。
+ * （本地 deriveSafe 曾一度替代过它，但那派生出的地址不一定等于账户实际的 Safe，
+ * 会导致余额读成 0，已回退。）
  */
 export function useProxyWallet() {
   const { address, isConnected, chainId } = useAccount()
@@ -32,11 +33,8 @@ export function useProxyWallet() {
     queryKey: ['proxy-wallet', address],
     queryFn: () => lookupProxyWallet(address as string),
     enabled,
-    staleTime: 10 * 60 * 1000, // 代理地址不会变，缓存久一点
+    staleTime: 10 * 60 * 1000,
   })
-  // 显式标注返回类型：`0x${string}` 一旦落进对象字面量的属性位置就会被
-  // 拓宽成 string，用它当 viem 的 address 参数（要求 `0x${string}`）会报错。
-  // 同时把 status 收成三个字面量，免得调用方拿到裸 string 没法穷举判断。
   const proxyAddr: `0x${string}` | undefined =
     q.data?.status === 'ok' ? q.data.proxyWallet : undefined
   return {
@@ -90,9 +88,15 @@ export function useTokenBalance(
  * 程序坏了 —— 他的钱明明就在钱包里。信息给全，人自己就判断得出「我还差一步」。
  *
  * gas（POL）读签名地址：链上交易的手续费只从 EOA 出。
+ *
+ * `connector` 一并返回：地址只显示缩写，人无从判断 dapp 到底在用哪个扩展。
+ * 同时装了多个钱包（MetaMask + 币安钱包是常见组合）时，「我点的是 A、余额是
+ * B 的」这种怀疑**无法从界面上排除**，所以把当前连接的名字摆出来。名字取自
+ * wagmi 的当前连接（v3 里 `useAccount` 就是 `useConnection`，取
+ * `config.state.current` 那一条），不是我们猜的。
  */
 export function useWalletBalances() {
-  const { address, isConnected, chainId } = useAccount()
+  const { address, isConnected, chainId, connector } = useAccount()
   const onPolygon = chainId === polygon.id
   const enabled = isConnected && onPolygon
 
@@ -104,5 +108,5 @@ export function useWalletBalances() {
   const eoaUsdcE = useTokenBalance(USDC_E_POLYGON, address, enabled)
   const eoaNativeUsdc = useTokenBalance(USDC_NATIVE_POLYGON, address, enabled)
 
-  return { address, isConnected, onPolygon, enabled, proxy, proxyAddr, pol, trading, eoaUsdcE, eoaNativeUsdc }
+  return { address, isConnected, onPolygon, enabled, connector, proxy, proxyAddr, pol, trading, eoaUsdcE, eoaNativeUsdc }
 }

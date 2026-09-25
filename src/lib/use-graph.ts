@@ -14,6 +14,7 @@ import {
   GammaError,
   clobTokenIdsOf,
   fetchMatchMarkets,
+  fetchMatchesByIds,
   fetchSoccerEvents,
   mergeIntoMatches,
   tickOf,
@@ -73,6 +74,32 @@ export function useSoccerMatches(): MatchListState {
 }
 
 const EMPTY_MATCHES: SoccerMatch[] = []
+
+/**
+ * 有仓位的那些比赛 —— 可能整个落在列表的时间窗之外。
+ *
+ * ## 为什么是独立的一个 hook，不并进 useSoccerMatches
+ *
+ *  1. **依赖反了**：这个要等持仓读回来才知道该拉哪些 id。并进去就等于让比赛列表
+ *     等持仓，而持仓是「拿不到就当没有」的标记数据（见 lib/use-positions.ts），
+ *     不该拖着主列表一起等。
+ *  2. 查询范围小得多（几个 id、一场几十 KB），和那份 1.3 MB 的窗口列表共用缓存
+ *     与失效时机没有道理。
+ *
+ * 拿不到就是空数组：这只是把「我参与过的比赛」补进列表，补不上时列表照常可用。
+ */
+export function usePositionMatches(eventIds: ReadonlySet<string>): SoccerMatch[] {
+  // 排序后再当 queryKey：Set 的迭代顺序跟着插入次序走，不排一下的话同一次持仓
+  // 数据在两轮渲染里会算出两个 key，白拉一遍
+  const ids = useMemo(() => [...eventIds].sort(), [eventIds])
+  const q = useQuery({
+    queryKey: ['matches-by-id', ids],
+    queryFn: () => fetchMatchesByIds(ids),
+    enabled: ids.length > 0,
+    staleTime: 5 * 60 * 1000,
+  })
+  return q.data ?? EMPTY_MATCHES
+}
 
 export type GraphState = {
   graph: MarketGraph | null

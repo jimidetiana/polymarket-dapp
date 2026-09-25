@@ -49,6 +49,12 @@ import type {
 
 export interface GraphMarketInput {
   id: string
+  /**
+   * 盘口的 conditionId。**按盘口查持仓/成交只能用它** —— data-api 的 `asset=`
+   * 参数是静默忽略的（见 lib/positions.ts 顶部）。与 id 是两个不同的标识符：
+   * id 是 Gamma 自己的编号，conditionId 是链上那张盘。
+   */
+  conditionId?: string | null
   questionEn: string
   questionZh?: string | null
   line?: number | string | null
@@ -581,6 +587,7 @@ export function buildMarketGraph(
     return {
       id: `m${m.id}`,
       marketId: String(m.id),
+      conditionId: m.conditionId == null ? null : String(m.conditionId),
       desc,
       questionEn: m.questionEn,
       questionZh: m.questionZh ?? null,

@@ -1,0 +1,724 @@
+<title>钱包下单链路交接</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap">
+<style>
+  :root {
+    --ground: #f5f6f8;
+    --surface: #ffffff;
+    --sunk: #eef0f4;
+    --ink: #14171c;
+    --muted: #5a626e;
+    --faint: #878f9c;
+    --line: #dde1e8;
+    --line-soft: #e8ebf0;
+    --accent: #0d6e6a;
+    --accent-soft: #e2f0ee;
+    --ok: #2c6e49;
+    --ok-soft: #e5f1e9;
+    --warn: #8a5a12;
+    --warn-soft: #f8eeda;
+    --bad: #a3332c;
+    --bad-soft: #f8e5e3;
+    --radius: 4px;
+    --sans: "IBM Plex Sans", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    --mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ground: #101316;
+      --surface: #171b20;
+      --sunk: #1d2228;
+      --ink: #e5e9ee;
+      --muted: #99a2af;
+      --faint: #6f7885;
+      --line: #282e36;
+      --line-soft: #21262d;
+      --accent: #4fbdb5;
+      --accent-soft: #12302f;
+      --ok: #62c08a;
+      --ok-soft: #16301f;
+      --warn: #d9a94f;
+      --warn-soft: #2e2513;
+      --bad: #e27c72;
+      --bad-soft: #331b19;
+      color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --ground: #101316;
+    --surface: #171b20;
+    --sunk: #1d2228;
+    --ink: #e5e9ee;
+    --muted: #99a2af;
+    --faint: #6f7885;
+    --line: #282e36;
+    --line-soft: #21262d;
+    --accent: #4fbdb5;
+    --accent-soft: #12302f;
+    --ok: #62c08a;
+    --ok-soft: #16301f;
+    --warn: #d9a94f;
+    --warn-soft: #2e2513;
+    --bad: #e27c72;
+    --bad-soft: #331b19;
+    color-scheme: dark;
+  }
+
+  body {
+    margin: 0;
+    background: var(--ground);
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: 15px;
+    line-height: 1.62;
+    -webkit-font-smoothing: antialiased;
+  }
+  .page { padding-inline: 20px; padding-block: 0 72px; }
+  .wrap { max-width: 1180px; margin: 0 auto; }
+
+  /* ── 页头 ───────────────────────────────────────── */
+  .masthead {
+    position: sticky; top: env(safe-area-inset-top, 0px); z-index: 20;
+    background: color-mix(in srgb, var(--ground) 88%, transparent);
+    backdrop-filter: blur(10px);
+    border-bottom: 1px solid var(--line);
+  }
+  .masthead-in {
+    max-width: 1180px; margin: 0 auto; padding-inline: 20px;
+    display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 14px;
+    padding-block: 11px;
+  }
+  .masthead h1 { font-size: 15px; font-weight: 600; margin: 0; letter-spacing: -0.01em; }
+  .masthead .meta {
+    font-family: var(--mono); font-size: 11.5px; color: var(--faint);
+    display: flex; flex-wrap: wrap; gap: 4px 12px;
+  }
+
+  /* ── 抬头区 ─────────────────────────────────────── */
+  .lede { padding-top: 34px; display: grid; gap: 22px; }
+  .kicker {
+    font-size: 10.5px; font-weight: 600; letter-spacing: 0.13em; text-transform: uppercase;
+    color: var(--accent);
+  }
+  .lede h2 {
+    font-size: clamp(24px, 4.4vw, 36px); line-height: 1.16; font-weight: 700;
+    letter-spacing: -0.022em; margin: 0; max-width: 26ch; text-wrap: balance;
+  }
+  .thesis {
+    font-size: 16.5px; line-height: 1.6; color: var(--muted); max-width: 66ch; margin: 0;
+  }
+  .thesis strong { color: var(--ink); font-weight: 600; }
+
+  .board {
+    display: grid; gap: 1px; background: var(--line);
+    border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  }
+  .board-cell { background: var(--surface); padding: 14px 16px 15px; }
+  .board-cell dt {
+    font-size: 10.5px; font-weight: 600; letter-spacing: 0.09em; text-transform: uppercase;
+    color: var(--faint); margin: 0 0 6px;
+  }
+  .board-cell dd {
+    margin: 0; font-family: var(--mono); font-size: 26px; font-weight: 600;
+    line-height: 1; font-variant-numeric: tabular-nums; letter-spacing: -0.02em;
+  }
+  .board-cell dd small { font-size: 12px; font-weight: 500; color: var(--muted); margin-left: 3px; }
+  .board-cell.is-zero dd { color: var(--bad); }
+  .board-cell.is-block dd { color: var(--warn); }
+  .board-cell.is-done dd { color: var(--ok); }
+
+  /* ── 骨架：目录 + 正文 ──────────────────────────── */
+  .shell {
+    display: grid; gap: 46px; padding-top: 44px;
+    grid-template-columns: 1fr;
+  }
+  @media (min-width: 1000px) {
+    .shell { grid-template-columns: 214px minmax(0, 1fr); gap: 52px; }
+  }
+  .toc { display: none; }
+  @media (min-width: 1000px) {
+    .toc { display: block; align-self: start; position: sticky; top: calc(env(safe-area-inset-top, 0px) + 62px); }
+  }
+  .toc ol {
+    list-style: none; margin: 0; padding: 0;
+    display: flex; flex-direction: column; gap: 1px;
+    border-left: 1px solid var(--line);
+  }
+  .toc a {
+    display: block; padding: 5px 0 5px 13px; margin-left: -1px;
+    border-left: 2px solid transparent;
+    font-size: 12.5px; color: var(--muted); text-decoration: none; line-height: 1.4;
+  }
+  .toc a:hover { color: var(--ink); border-left-color: var(--line); }
+  .toc a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .toc li.is-key a { color: var(--ink); font-weight: 500; }
+  .toc li.is-key a::before {
+    content: ""; display: inline-block; width: 4px; height: 4px; border-radius: 50%;
+    background: var(--bad); margin: 0 7px 2px -13px;
+  }
+
+  main { display: flex; flex-direction: column; gap: 46px; min-width: 0; }
+  section { display: flex; flex-direction: column; gap: 15px; scroll-margin-top: 76px; }
+  section > h3 {
+    font-size: 19px; font-weight: 600; margin: 0; letter-spacing: -0.014em;
+    padding-bottom: 9px; border-bottom: 1px solid var(--line);
+    display: flex; align-items: baseline; gap: 10px; text-wrap: balance;
+  }
+  h4 { font-size: 14px; font-weight: 600; margin: 8px 0 0; letter-spacing: -0.005em; }
+  p { margin: 0; max-width: 68ch; }
+  ul, ol.plain { margin: 0; padding-left: 19px; display: flex; flex-direction: column; gap: 7px; max-width: 68ch; }
+  li { padding-left: 2px; }
+  a { color: var(--accent); text-underline-offset: 2px; }
+  a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  code {
+    font-family: var(--mono); font-size: 0.855em;
+    background: var(--sunk); border: 1px solid var(--line-soft);
+    padding: 0.1em 0.34em; border-radius: 3px; overflow-wrap: anywhere;
+  }
+
+  /* ── 数据表 ─────────────────────────────────────── */
+  .scroller { overflow-x: auto; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; }
+  th, td { text-align: left; padding: 9px 13px; border-bottom: 1px solid var(--line-soft); vertical-align: top; }
+  th {
+    font-size: 10.5px; font-weight: 600; letter-spacing: 0.07em; text-transform: uppercase;
+    color: var(--faint); background: var(--sunk); white-space: nowrap;
+  }
+  tbody tr:last-child td { border-bottom: 0; }
+  td code { background: none; border: 0; padding: 0; }
+  .num { font-family: var(--mono); font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+  /* ── 证据块 ─────────────────────────────────────── */
+  pre {
+    margin: 0; overflow-x: auto; background: var(--sunk);
+    border: 1px solid var(--line); border-left: 3px solid var(--accent);
+    border-radius: var(--radius); padding: 13px 15px;
+    font-family: var(--mono); font-size: 12.3px; line-height: 1.65;
+    color: var(--ink); tab-size: 2;
+  }
+  pre.is-bad { border-left-color: var(--bad); }
+  figcaption {
+    font-size: 11.5px; color: var(--faint); margin-top: 7px;
+    font-family: var(--mono);
+  }
+  figure { margin: 0; display: flex; flex-direction: column; }
+
+  /* ── 提示条 ─────────────────────────────────────── */
+  .note {
+    border: 1px solid var(--line); border-left: 3px solid var(--faint);
+    background: var(--surface); border-radius: var(--radius);
+    padding: 12px 15px; font-size: 13.5px; color: var(--muted); max-width: 68ch;
+  }
+  .note strong { color: var(--ink); }
+  .note.is-warn { border-left-color: var(--warn); background: var(--warn-soft); color: var(--ink); }
+  .note.is-bad { border-left-color: var(--bad); background: var(--bad-soft); color: var(--ink); }
+  .note.is-ok { border-left-color: var(--ok); background: var(--ok-soft); color: var(--ink); }
+
+  .chip {
+    display: inline-block; font-family: var(--mono); font-size: 10.5px; font-weight: 500;
+    padding: 1px 6px; border-radius: 3px; letter-spacing: 0.02em; white-space: nowrap;
+  }
+  .chip.ok { background: var(--ok-soft); color: var(--ok); }
+  .chip.bad { background: var(--bad-soft); color: var(--bad); }
+  .chip.warn { background: var(--warn-soft); color: var(--warn); }
+  .chip.plain { background: var(--sunk); color: var(--muted); }
+
+  /* ── 步骤 ───────────────────────────────────────── */
+  ol.steps { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 13px; max-width: 68ch; counter-reset: s; }
+  ol.steps > li {
+    display: grid; grid-template-columns: 22px 1fr; gap: 12px; align-items: start;
+    padding-left: 0;
+  }
+  ol.steps > li::before {
+    counter-increment: s; content: counter(s);
+    font-family: var(--mono); font-size: 11px; font-weight: 600;
+    color: var(--accent); border: 1px solid var(--line); background: var(--surface);
+    border-radius: 3px; height: 22px; display: grid; place-items: center;
+  }
+  ol.steps p + p { margin-top: 6px; }
+
+  footer {
+    margin-top: 52px; padding-top: 18px; border-top: 1px solid var(--line);
+    font-size: 12px; color: var(--faint); max-width: 68ch;
+  }
+</style>
+
+<div class="masthead">
+  <div class="masthead-in">
+    <h1>钱包与下单链路 · 交接报告</h1>
+    <div class="meta">
+      <span>polymarket-dapp</span>
+      <span>2026-09-24</span>
+      <span>未提交的工作区</span>
+    </div>
+  </div>
+</div>
+
+<div class="page">
+<div class="wrap">
+
+  <header class="lede">
+    <div>
+      <div class="kicker">阻塞点 · 唯一</div>
+      <h2>订单签得出来，交易所不接受它的 maker</h2>
+    </div>
+    <p class="thesis">
+      下单链路已经能走到「订单签名成功、提交给交易所」。唯一的阻塞点是 CLOB 拒单：
+      <strong>maker address not allowed, please use the deposit wallet flow</strong>。
+      根因判断是订单被以 <strong>SignatureType: 2（Gnosis Safe）</strong> 签出，而交易所要的是
+      deposit wallet flow（3）。
+    </p>
+
+    <dl class="board">
+      <div class="board-cell is-zero">
+        <dt>成功下单</dt>
+        <dd>0<small>笔</small></dd>
+      </div>
+      <div class="board-cell is-block">
+        <dt>阻塞点</dt>
+        <dd>1<small>个</small></dd>
+      </div>
+      <div class="board-cell is-done">
+        <dt>已修 bug</dt>
+        <dd>2<small>处</small></dd>
+      </div>
+      <div class="board-cell">
+        <dt>被推翻的假设</dt>
+        <dd>2<small>个</small></dd>
+      </div>
+    </dl>
+
+    <div class="note is-bad">
+      <strong>接手前必读：</strong>本仓库的下单路径<strong>从未成功下过一笔单</strong>——代码注释里也是这么写给用户看的。
+      下面所有「已确认」都基于控制台输出与 SDK 源码，<strong>没有一次成功的端到端验证</strong>。
+      另外本次会话<strong>一次都没跑成 typecheck</strong>，所有改动未经编译验证。
+    </div>
+  </header>
+
+  <div class="shell">
+
+    <nav class="toc" aria-label="目录">
+      <ol>
+        <li class="is-key"><a href="#blocker">一 · 唯一的阻塞点</a></li>
+        <li><a href="#facts">二 · 账户与环境事实</a></li>
+        <li><a href="#changes">三 · 本次改动的代码</a></li>
+        <li><a href="#bugs">四 · 两处已确认的 bug</a></li>
+        <li><a href="#deadends">五 · 走错的路</a></li>
+        <li><a href="#risk">六 · 未验证与风险</a></li>
+        <li><a href="#glossary">七 · 口径速查</a></li>
+        <li><a href="#files">八 · 涉及的文件</a></li>
+        <li><a href="#next">九 · 建议的下一步</a></li>
+      </ol>
+    </nav>
+
+    <main>
+
+      <section id="blocker">
+        <h3>一 · 唯一的阻塞点</h3>
+
+        <h4>现象</h4>
+        <p>点「确认下单」→ 钱包签名成功 → 提交 → 交易所返回：</p>
+        <figure>
+          <pre class="is-bad">RequestRejectedError: maker address not allowed, please use the deposit wallet flow
+(https://clob.polymarket.com/order)
+
+  at async placeOrder   src/lib/clob-client.ts:249
+  at async doPlace      src/components/order-dialog.tsx:147</pre>
+          <figcaption>控制台原文，2026-09-24</figcaption>
+        </figure>
+
+        <h4>决定性证据：钱包里看到的待签订单</h4>
+        <p>MetaMask 签名弹窗展开后的字段：</p>
+        <div class="scroller">
+          <table>
+            <thead>
+              <tr><th>字段</th><th>值</th><th>说明</th></tr>
+            </thead>
+            <tbody>
+              <tr><td>主要类型</td><td><code>Order</code></td><td></td></tr>
+              <tr><td>Builder</td><td><code>0xaee29306…96e4af3</code></td><td>我们的 builder code，正确</td></tr>
+              <tr><td><b>Maker</b></td><td><code>0x171cD…429E2</code></td><td><span class="chip bad">被拒</span> gamma <code>public-profile</code> 返回的 <code>proxyWallet</code>（截图只有缩写，需要完整值）</td></tr>
+              <tr><td>MakerAmount</td><td class="num">3050000</td><td>$3.05，与确认面板一致 ✓</td></tr>
+              <tr><td>TakerAmount</td><td class="num">5000000</td><td>5 份 ✓</td></tr>
+              <tr><td>Side</td><td class="num">0</td><td>BUY ✓</td></tr>
+              <tr><td><b>SignatureType</b></td><td class="num"><b>2</b></td><td><span class="chip bad">根因所在</span> Gnosis Safe</td></tr>
+              <tr><td>Signer</td><td>Account 1</td><td>签名地址，正确</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <p>SDK 的钱包类型枚举（<code>bindings/dist/gamma/index.d.ts:10023</code>）：</p>
+        <figure>
+          <pre>declare enum WalletType {
+    EOA = 0,
+    POLY_PROXY = 1,
+    GNOSIS_SAFE = 2,      // ← SDK 签出去的是这个
+    DEPOSIT_WALLET = 3    // ← 交易所要的是这个
+}</pre>
+        </figure>
+
+        <div class="note is-warn">
+          <code>src/lib/proxy-wallet.ts</code> 的注释里写着这个账户「signatureType = 3（DEPOSIT_WALLET）」，
+          与观察到的 <strong>2</strong> 矛盾。
+        </div>
+
+        <h4>原因判断</h4>
+        <p><code>clob-client.ts</code> 的 <code>createClient</code> 显式传了 <code>wallet</code>：</p>
+        <figure>
+          <pre>const client = await createSecureClient({ wallet: accountWallet, signer })
+//                                          ^^^^^^^^^^^^^^^^^^^^^ 来自 gamma 的 proxyWallet</pre>
+        </figure>
+        <p>而 SDK 文档（<code>types-BqK8Y3G5.d.ts:5102</code>）说：</p>
+        <figure>
+          <pre>/**
+ * Wallet address to use as the account wallet.
+ *
+ * If omitted, the client uses the signer's deterministic Deposit Wallet as
+ * the account wallet. Pass the signer address itself to explicitly trade as
+ * an EOA account, or pass a supported Poly Deposit Wallet, Poly Safe, or Poly
+ * Proxy wallet address to use that wallet as the account/funder.
+ */
+wallet?: string</pre>
+        </figure>
+        <p>
+          <strong>我们传进去的那个地址被 SDK 归类成了 Gnosis Safe</strong>，于是按 Safe 的流程签名；
+          而错误原文要求的正是 deposit wallet flow——也就是「省略 <code>wallet</code> 时 SDK 会用的那个」。
+        </p>
+
+        <h4>下一步只差一个数</h4>
+        <p><code>clob-client.ts:214</code> 已经加了一行日志：</p>
+        <figure>
+          <pre>console.info('[clob] 账户身份：', {
+  signer: acct?.signer, signerType: acct?.signerType,
+  wallet: acct?.wallet, walletType: acct?.walletType,
+})</pre>
+        </figure>
+        <p>
+          <span class="chip warn">待补</span>
+          用户尚未提供展开后的内容（控制台里是折叠的 <code>▸ Object</code>）。拿到 <code>walletType</code> 就能定死：
+        </p>
+        <div class="scroller">
+          <table>
+            <thead><tr><th>walletType</th><th>含义</th><th>修法</th></tr></thead>
+            <tbody>
+              <tr>
+                <td class="num">2</td>
+                <td>确认是地址分类问题</td>
+                <td><strong>不传 <code>wallet</code></strong>，让 SDK 推确定性 Deposit Wallet</td>
+              </tr>
+              <tr>
+                <td class="num">3</td>
+                <td>与 <code>SignatureType: 2</code> 矛盾</td>
+                <td>问题在 SDK 更深处，需另找方向</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="note">
+          <strong>改「不传 wallet」时的一个未知数。</strong>
+          现在「可交易 pUSD」读的是 gamma 的 <code>proxyWallet</code>（$4.80，与一笔真实入金一致）。
+          若省略 <code>wallet</code> 后 SDK 推出来的是<strong>另一个地址</strong>，那边大概率是 $0，订单会因余额不足被拒
+          —— <strong>不丢钱，只是白签一次</strong>。
+          <p style="margin-top:8px">
+            「钱在旧钱包里、交易账户却是 deposit wallet」正好对应代码里那条待办：上游供应链事故的
+            <strong>转移资金、重新派生 CLOB key</strong>。这是猜测不是结论——但如果成立，那条待办就不是可选项，
+            而是「能不能下单」的前提。
+          </p>
+          <p style="margin-top:8px">
+            另外：现有自检会在 SDK 解析出的 wallet ≠ 传入的 <code>accountWallet</code> 时<strong>抛错</strong>。
+            省略 <code>wallet</code> 必须同时放宽这条自检，否则会得到一个中文自检错误而不是想观察的结果。
+          </p>
+        </div>
+      </section>
+
+      <section id="facts">
+        <h3>二 · 账户与环境事实</h3>
+        <div class="scroller">
+          <table>
+            <thead><tr><th>项</th><th>值</th><th>来源</th></tr></thead>
+            <tbody>
+              <tr><td>代理钱包 / maker</td><td><code>0x171cD…429E2</code></td><td>gamma <code>public-profile</code>（需完整值）</td></tr>
+              <tr><td>可交易余额</td><td class="num">$4.80</td><td>面板读数；与一笔真实入金 4.80 一致</td></tr>
+              <tr><td>钱包扩展</td><td>MetaMask ＋ 币安钱包<strong>同时安装</strong></td><td>用户，及控制台第三方日志</td></tr>
+              <tr><td>浏览器差异</td><td><span class="chip warn">成因未确认</span> Chrome 正常，Edge 出问题</td><td>用户观察</td></tr>
+              <tr><td>builder code</td><td><code>0xaee29306…96e4af3</code></td><td><code>src/lib/builder.ts</code></td></tr>
+              <tr><td>设置页费率</td><td>0.05%（= 5 bps）<span class="chip ok">已生效</span></td><td>见第四节</td></tr>
+              <tr><td>抵押代币</td><td>pUSD <code>0xC011a7…2E82DFB</code>，6 位小数</td><td>$4.80 显示正确即验证了小数位</td></tr>
+              <tr><td>链</td><td>Polygon (137)</td><td><code>src/lib/wagmi.ts</code></td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p>控制台里另外两条未解释的：</p>
+        <figure>
+          <pre>Failed to load resource: clob.polymarket.com/auth/api-key:1  → 400
+Failed to load resource: clob.polymarket.com/order:1         → 400</pre>
+        </figure>
+        <p>L2 凭据派生接口回 400。可能是「key 已存在」之类的正常响应，<strong>未查证</strong>。等 maker 问题解决后若仍有异常，再查。</p>
+      </section>
+
+      <section id="changes">
+        <h3>三 · 本次改动的代码</h3>
+        <div class="note">
+          工作区里还有用户自己更早的未提交改动（<code>App.tsx</code>、<code>match-picker.tsx</code>、
+          <code>graph/*</code>、<code>layout.ts</code>、<code>index.css</code> 等，共 16 个文件）。
+          <strong>下面只列本次会话改的。</strong>
+        </div>
+
+        <h4><code>src/lib/clob-client.ts</code></h4>
+        <div class="scroller">
+          <table>
+            <thead><tr><th>位置</th><th>改动</th><th>为什么</th></tr></thead>
+            <tbody>
+              <tr><td class="num">:143</td><td><code>fetchFeeRates</code> 返回值 <code>× 10_000</code></td><td><span class="chip bad">修 bug</span> 见第四节</td></tr>
+              <tr><td class="num">:214</td><td>新增 <code>console.info('[clob] 账户身份：')</code></td><td>定位 maker 拒单；<strong>当前最需要的数据</strong></td></tr>
+              <tr><td class="num">:334</td><td>新增 <code>errorChain(e)</code></td><td>沿 cause 链取类名与报文，<strong>按字段取而非 <code>instanceof</code></strong></td></tr>
+              <tr><td class="num">:379</td><td>重写 <code>explainError</code></td><td><span class="chip bad">修 bug</span> 见第四节</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h4><code>src/lib/use-clob.ts</code></h4>
+        <div class="scroller">
+          <table>
+            <thead><tr><th>位置</th><th>改动</th><th>为什么</th></tr></thead>
+            <tbody>
+              <tr><td class="num">:215-216</td><td><code>fromApi &gt; 0 ? fromApi : maxBpsOf(BUILDER_FEE_RATES)</code></td><td>原写法 <code>q.data ?? …</code> 接不住 API 返回 0，费率行会整个消失</td></tr>
+              <tr><td class="num">:150-170<br>:184-192</td><td>注释与 warn 文案重写</td><td>原先的解释基于错误假设（见第五节）</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h4><code>src/components/connect-wallet.tsx</code></h4>
+        <div class="scroller">
+          <table>
+            <thead><tr><th>位置</th><th>改动</th><th>为什么</th></tr></thead>
+            <tbody>
+              <tr><td class="num">:56 :69 :184</td><td>把 <code>useConnect().error</code> 接出来并传下去</td><td><strong>原先从不读它</strong>，连接失败在界面上完全不存在</td></tr>
+              <tr><td class="num">:213 :229</td><td>渲染 <code>ConnectError</code></td><td>同上</td></tr>
+              <tr><td class="num">:286</td><td>新增 <code>ConnectError</code> 组件</td><td>悬浮在按钮下方，z-40（让钱包列表 z-50 盖住它）</td></tr>
+              <tr><td class="num">:317</td><td>新增 <code>explainConnectError</code></td><td>-32002 单独翻译成人话</td></tr>
+              <tr><td class="num">:455</td><td>面板新增「当前钱包」一行</td><td>装了多个扩展时，界面上原本看不出 dapp 在用哪个</td></tr>
+              <tr><td class="num">:126-165</td><td><code>pickable()</code> 的注释</td><td>记录「什么时候会连错钱包」；<strong>代码本身已回到原样</strong></td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h4><code>src/lib/use-wallet.ts</code></h4>
+        <div class="scroller">
+          <table>
+            <thead><tr><th>位置</th><th>改动</th></tr></thead>
+            <tbody>
+              <tr><td class="num">:94-101 :113</td><td><code>useWalletBalances</code> 多返回一个 <code>connector</code>（供「当前钱包」那行用）</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="bugs">
+        <h3>四 · 两处已确认的 bug（本轮已修）</h3>
+
+        <h4>1 · 费率单位错了 10000 倍</h4>
+        <p>SDK 的 zod transform 把 bps 除掉了 10000（<code>bindings/dist/clob/index.js</code>）：</p>
+        <figure>
+          <pre>oe = 1e4,
+Pe = z.object({
+  builder_maker_fee_rate_bps: z.number(),
+  builder_taker_fee_rate_bps: z.number()
+}).transform(({ builder_maker_fee_rate_bps: e, builder_taker_fee_rate_bps: t }) =&gt; ({
+  maker: e / oe,      // ← 除以 10000
+  taker: t / oe
+}))</pre>
+        </figure>
+        <p><strong>所以 <code>r.maker</code> / <code>r.taker</code> 是小数，不是 bps。</strong>设置页配 0.05%（= 5 bps）时，原始字段是 5，SDK 交给我们的是 <code>0.0005</code>。</p>
+        <p>原代码只改了字段名、没换单位：</p>
+        <figure>
+          <pre>return { makerBps: Number(r.maker), takerBps: Number(r.taker) }   // 把 0.0005 当成 bps</pre>
+        </figure>
+        <p>
+          后果：费率被少报 10000 倍 → <code>bpsLabel(0.0005)</code> 四位小数舍成 <code>"0%"</code>，
+          而 <code>feeCentsOf</code> 照样向上取整成 <code>$0.01</code> → 界面上出现自相矛盾的
+          <strong>「手续费（0%）$0.01」</strong>。
+        </p>
+        <div class="note is-ok">
+          <strong>顺带一个好消息：</strong>用户的 0.05% <strong>早就生效了</strong>，不是「还没生效」
+          —— <code>0.0005</code> 就是 5 bps。曾经误判为「设置页改了还没生效」，那是错的。
+        </div>
+
+        <h4>2 · <code>explainError</code> 把服务端拒单误判成「你拒绝了签名」</h4>
+        <p>原正则：</p>
+        <figure>
+          <pre>if (/cancel|reject|denied|user refused/i.test(name) || ...)</pre>
+        </figure>
+        <p>
+          <code>name</code> 是 <strong><code>RequestRejectedError</code></strong>——名字里带 <code>Rejected</code>，被吃掉了。
+          而它表示<strong>服务端拒绝了这次请求</strong>（就是上面那条 maker 拒单），跟签名毫无关系。
+        </p>
+        <div class="note is-bad">
+          后果：用户明明点了「确认」，界面却说「你在钱包里拒绝了这次签名」，而真实原因被完全吞掉，只能反复重试。
+        </div>
+        <p>已改成只认 <code>CancelledSigningError</code> 与 <code>UserRejectedRequestError</code>。</p>
+        <div class="note">
+          <strong>另一个要注意的：</strong><code>CancelledSigningError</code> 本身也<strong>不等于</strong>用户拒绝。
+          SDK 有 <code>static fromError(error: Error)</code>，用在
+          <code>try { signer.signTypedData(...) } catch (t) { throw fromError(t, '...') }</code> 这类位置——
+          <strong><code>signTypedData</code> 的任何失败都会被转成它</strong>。
+        </div>
+      </section>
+
+      <section id="deadends">
+        <h3>五 · 走错的路（别重走）</h3>
+        <p>排查过程中有两个假设被<strong>推翻</strong>了，写在这里省得重复：</p>
+        <ol class="plain">
+          <li>
+            <strong>「wagmi 的 hydrate guard 会丢掉 6963 广播，导致连错钱包」——错。</strong>
+            <code>@wagmi/core/src/createConfig.ts:335</code> 确实有
+            <code>if (storage &amp;&amp; !store.persist.hasHydrated()) return</code>，但 <code>:267</code> 是
+            <code>skipHydration: ssr</code>，我们没传 <code>ssr</code>（默认 false），localStorage 同步 hydrate，
+            <strong>那句 guard 不会触发</strong>。
+            <p style="margin-top:6px">
+              相关事实：<code>multiInjectedProviderDiscovery</code> 默认 <code>true</code>（<code>:48</code>）；
+              6963 发现的连接器<strong>带着自己的 provider</strong>
+              （<code>:121</code> <code>injected({ target: { ...info, id: info.rdns, provider } })</code>），
+              所以从列表里点 MetaMask 用的就是 MetaMask，不会串。
+            </p>
+          </li>
+          <li>
+            <strong>「MetaMask 啃不动 ERC-7739 的 TypedDataSign 外壳」——错。</strong>
+            这次错误是 <code>RequestRejectedError</code>（服务端拒绝），<strong>不是签名取消</strong>
+            —— 说明订单签名本身是成功的。
+          </li>
+        </ol>
+        <div class="note">
+          另外，<code>src/lib/proxy-wallet.ts</code> 里那条「POLY_ADDRESS 恒为签名地址，不是代理地址」
+          是<strong>已经订正过的结论</strong>，别改回去。
+        </div>
+      </section>
+
+      <section id="risk">
+        <h3>六 · 未验证与风险</h3>
+        <div class="scroller">
+          <table>
+            <thead><tr><th>项</th><th>状态</th></tr></thead>
+            <tbody>
+              <tr><td><strong>整条下单路径</strong></td><td><span class="chip bad">从未成功跑通一笔</span></td></tr>
+              <tr><td><strong>typecheck</strong></td><td><span class="chip bad">本次会话一次都没跑成</span>（Bash 工具全程不可用）。所有改动<strong>未经编译验证</strong></td></tr>
+              <tr><td>手续费公式</td><td>「按成交名义额（份额×单价）计费」是<strong>推出来的</strong>，未实测。<code>bindings/clob</code> 的 <code>ClobTrade</code> / <code>PaginatedBuilderTrades</code> 里有 <code>feeUsdc</code> 与 <code>feeRateBps</code>，成交后可拿来对账</td></tr>
+              <tr><td>卖出侧手续费</td><td>「从成交额里扣」同样未实测；若实际是另收一笔，<code>proceedsUsd</code> 会偏乐观</td></tr>
+              <tr><td>上游供应链事故</td><td>待办未做完（转移资金、重新派生 CLOB key）。<strong>用同一个钱包下单会继承那份风险</strong></td></tr>
+              <tr><td>测试覆盖</td><td><code>clob-client.ts</code>、<code>use-clob.ts</code>、两个弹窗组件<strong>都没有测试</strong>。有测试的只有纯函数</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="note is-warn">
+          <strong>建议接手后第一件事：跑 <code>npm run typecheck</code>。</strong>
+        </div>
+      </section>
+
+      <section id="glossary">
+        <h3>七 · 口径速查</h3>
+        <p>这个项目踩过的地方，按正确口径列一遍：</p>
+        <div class="scroller">
+          <table>
+            <thead><tr><th>概念</th><th>正确口径</th></tr></thead>
+            <tbody>
+              <tr><td><code>POLY_ADDRESS</code>（L2 认证头）</td><td><strong>恒为签名地址（EOA）</strong>，不是代理地址。搞反会 401</td></tr>
+              <tr><td>订单的 <code>maker</code></td><td>账户/资金钱包（funder）。<strong>当前用的 gamma <code>proxyWallet</code> 被交易所拒了</strong></td></tr>
+              <tr><td><code>signatureType</code></td><td><code>0</code>=EOA <code>1</code>=POLY_PROXY <code>2</code>=GNOSIS_SAFE <code>3</code>=DEPOSIT_WALLET。<strong>当前签出去的是 2</strong></td></tr>
+              <tr><td>费率单位</td><td>SDK 返回的是<strong>小数</strong>（已 ÷10000），不是 bps</td></tr>
+              <tr><td>价格精度 tick</td><td>每个市场各自不同（0.1 / 0.01 / 0.001 / 0.0001），必须问 CLOB。内部一律走<strong>整数步</strong></td></tr>
+              <tr><td>抵押代币</td><td><strong>pUSD</strong>，不是 USDC.e（后者是上一代协议的）</td></tr>
+              <tr><td>交易所拒单</td><td>是<strong>返回值</strong>（<code>ok === false</code>），不是异常。签名/网络错才抛</td></tr>
+              <tr><td><code>CancelledSigningError</code></td><td><strong>不是</strong>「用户拒绝」的同义词，是 <code>signTypedData</code> 失败的统称</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="files">
+        <h3>八 · 涉及的文件</h3>
+        <figure>
+          <pre>src/components/connect-wallet.tsx    钱包入口（连接 / 切链 / 余额浮窗）
+src/components/order-dialog.tsx      下单弹窗（tick / 余额 / 费率汇合点 + 确认面板）
+src/components/order-form.tsx        下单表单 + 手续费 / 余额校验
+src/components/order-book.tsx        盘口深度
+src/components/approvals-dialog.tsx  交易授权（relayer 免 gas）
+src/lib/clob-client.ts            ★ 纯逻辑层：签名、下单、授权、挂单（不 import React）
+src/lib/use-clob.ts                 React 层：何时调、状态怎么摆
+src/lib/use-wallet.ts               余额读数（★ 不 import SDK，主包能用）
+src/lib/proxy-wallet.ts             代理钱包地址 + pUSD 地址 + 历史踩坑
+src/lib/fee.ts                      手续费计算与展示
+src/lib/tick.ts                     价格精度（整数步）
+src/lib/builder.ts                  builder code 归因</pre>
+        </figure>
+
+        <div class="note">
+          <strong>一条架构约束。</strong>
+          <code>src/lib/use-wallet.ts</code> 与 <code>src/components/connect-wallet.tsx</code> 在<strong>主包</strong>里，
+          <strong>不许 import 任何牵进 <code>@polymarket/client</code> 的模块</strong>（SDK 约 300 kB gzip）。
+          违反不会有报错，只会让首屏包悄悄变胖。下单 / 授权弹窗都是 <code>lazy()</code> 的。
+        </div>
+        <div class="note">
+          <strong>另一条。</strong><code>clob-client.ts</code> 不 import React；<code>use-clob.ts</code> 不写业务逻辑。
+        </div>
+      </section>
+
+      <section id="next">
+        <h3>九 · 建议的下一步</h3>
+        <ol class="steps">
+          <li>
+            <div>
+              <p>跑 <code>npm run typecheck</code>。</p>
+              <p>本轮改动全部未经编译验证。</p>
+            </div>
+          </li>
+          <li>
+            <div>
+              <p>拿到 <code>[clob] 账户身份：</code> 展开后的内容。</p>
+              <p>关键就是 <code>walletType</code> 是 2 还是 3。</p>
+            </div>
+          </li>
+          <li>
+            <div>
+              <p>按结果选修法。</p>
+              <p>
+                <code>walletType === 2</code> → 试<strong>不传 <code>wallet</code></strong>，
+                同时放宽 <code>createClient</code> 的地址自检（改成记录而非抛错），
+                观察 SDK 推出来的 deposit wallet 地址，以及那个地址上有没有钱。
+              </p>
+              <p><code>walletType === 3</code> → 换方向，往 SDK 订单构造里查。</p>
+            </div>
+          </li>
+          <li>
+            <div>
+              <p>测试下单请用<strong>远离市场的限价</strong>（例如单价 0.10、5 份 = $0.50）。</p>
+              <p>
+                它不会成交，能验证整条链路而不用押上全部本金——余额只有 $4.80，
+                而最小 5 份在市价 0.94 时就是 $4.70。
+              </p>
+            </div>
+          </li>
+          <li>
+            <div>
+              <p>钱包弹窗<strong>每笔订单必然出现一次</strong>（这是模型决定的，不是实现问题）。</p>
+              <p>
+                另有<strong>每会话一次</strong>的 L2 凭据派生签名。想省掉后者需要持久化 <code>ApiKeyCreds</code>，
+                但那与「重新派生 CLOB key」那条待办方向相反，<strong>建议等那条待办做完</strong>。
+              </p>
+            </div>
+          </li>
+        </ol>
+      </section>
+
+      <footer>
+        本报告由 2026-09-24 的一次排查会话整理。所有结论标注了来源；未标注来源的判断都写明了是推断。
+        仓库根目录另有一份同内容的 Markdown（<code>WALLET-HANDOFF.md</code>），供下一个会话直接读取。
+      </footer>
+
+    </main>
+  </div>
+</div>
+</div>

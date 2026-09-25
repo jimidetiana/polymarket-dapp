@@ -26,12 +26,17 @@ import teamsJson from '@/data/teams.zh.json'
 import leaguesJson from '@/data/leagues.zh.json'
 
 /** JSON 里的说明字段，不是词条 */
-const META_KEY = '_comment'
+/**
+ * 以下划线开头的键是说明 / 分节注释，不是词条。
+ * 除了顶部的 `_comment`，批量导入时也会插入 `_imported_from_trader` 这类分节标记
+ * （见 teams.zh.json 后半段）；统一按前缀剥离，免得假词条混进 BASE_TEAMS 污染计数和导出。
+ */
+const isMetaKey = (k: string): boolean => k.startsWith('_')
 
 function stripMeta(obj: Record<string, string>): Record<string, string> {
   const out: Record<string, string> = {}
   for (const [k, v] of Object.entries(obj)) {
-    if (k !== META_KEY) out[k] = v
+    if (!isMetaKey(k)) out[k] = v
   }
   return out
 }

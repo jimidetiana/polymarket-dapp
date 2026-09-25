@@ -10,12 +10,12 @@
  */
 import { useEffect, useMemo, useState } from 'react'
 import { createPortal } from 'react-dom'
+import { useQueryClient } from '@tanstack/react-query'
 import { cn } from '../lib/utils'
 import { OrderForm } from './order-form'
 import { OrderBook } from './order-book'
 import { DEFAULT_TICK, formatTickPrice, TICK_SIZES, toSteps, type TickSize } from '../lib/tick'
 import { PUSD_DECIMALS } from '../lib/money'
-import { feeBreakdown, formatFeeAmount, settleOf } from '../lib/fee'
 import {
   useBuilderFeeRates,
   useClob,
@@ -24,6 +24,15 @@ import {
   useProxyWallet,
 } from '../lib/use-clob'
 import { explainError, type OpenOrderRow, type PlaceOutcome } from '../lib/clob-client'
+/**
+ * 持仓 / 成交走**公开 REST**（免鉴权），不经 SecureClient。
+ *
+ * 这不只是省一次签名：那条鉴权路径要先打到本地签名服务（server/sign-server.mjs），
+ * 它没启动时整条链路是 502 —— 而持仓和成交本来就不需要它。分开之后，签名服务没起
+ * 只影响下面那一段「持仓中」，另外两段照常显示。
+ */
+import { useMarketOrders } from '../lib/use-positions'
+import { positionKind, type PolyPosition } from '../lib/positions'
 import type { Quote } from '../lib/book'
 
 export type OrderSideChoice = { name: string; tokenId: string }
@@ -38,6 +47,14 @@ interface Props {
   marketQuestion: string
   /** 赛事标题 */
   eventTitle: string
+  /**
+   * 这张盘口的 conditionId。持仓与成交按它查。
+   *
+   * ⚠️ **不能用 tokenId 代替** —— data-api 的 `asset=` 参数是静默忽略的，传了会返回
+   * 全部盘口的数据，看起来完全像生效了（见 lib/positions.ts 顶部）。
+   * 拿不到（老数据里没有这个字段）时那两段不查，只留挂单。
+   */
+  conditionId: string | null
   /** 同一张盘口的可选两侧（Over/Under、Yes/No）。多于一个时显示切换 */
   sides: OrderSideChoice[]
   onSelectSide: (s: OrderSideChoice) => void
@@ -54,6 +71,7 @@ export function OrderDialog({
   marketLabel,
   marketQuestion,
   eventTitle,
+  conditionId,
   sides,
   onSelectSide,
   tickByToken,
@@ -62,18 +80,48 @@ export function OrderDialog({
 }: Props) {
   const clob = useClob()
   const proxy = useProxyWallet()
+  const queryClient = useQueryClient()
   const usdc = useCollateralBalance(proxy.proxyAddr)
   const depth = useOrderBook(tokenId, true)
   // 费率在这一层查一次，往下传给表单和确认面板。两处各查一次就会出现
   // 「表单显示 0.05%、确认面板显示别的」这种自相矛盾。
   const { feeBps } = useBuilderFeeRates()
+  /**
+   * 本盘口的持仓与成交。走公开 REST，**免鉴权、不弹签名**，所以打开弹窗就能自动加载 ——
+   * 与下面的挂单不同，那个必须先建已认证客户端。
+   */
+  const orders = useMarketOrders(conditionId, true)
+  /**
+   * 把本盘口的仓位分成「持仓」和「完结」两堆。
+   *
+   * 分类规则在 lib/positions.ts 的 positionKind 里（有测试钉着）：`redeemable` 或份额已
+   * 清零算完结。**判据不在这里自己写** —— 那个「份额清零」的判断不能用 `> 0`，实测卖光
+   * 之后会留下 1e-9 这种浮点残渣，按 `> 0` 判会把它显示成还持有着。
+   *
+   * 一张盘口两侧（Yes/No、Over/Under）都可能有仓位，两堆都可能不止一条。
+   */
+  const [held, settled] = useMemo(() => {
+    const open: PolyPosition[] = []
+    const done: PolyPosition[] = []
+    for (const p of orders.positions) {
+      if (positionKind(p) === 'open') open.push(p)
+      else done.push(p)
+    }
+    return [open, done] as const
+  }, [orders.positions])
+
+  /**
+   * 持仓 / 成交 / 完结三段共用 useMarketOrders 这一个查询，都只在**读完之后**
+   * 才说自己的内容。读之前那三段是空的，而空在界面上读起来就是「没有」——
+   * 所以状态由下面那段共用状态行统一报一次（见 JSX 里的注释）。
+   */
+  const ordersReady = !orders.loading && !orders.error
 
   const [phase, setPhase] = useState<'idle' | 'placing' | 'listing' | 'cancelling'>('idle')
   const [outcome, setOutcome] = useState<PlaceOutcome | null>(null)
   const [fatal, setFatal] = useState<string | null>(null)
   /** 成功但非订单结果的通知（如撤单回执）。与 fatal 分开：撤单成功不该显示成警告色 */
   const [notice, setNotice] = useState<string | null>(null)
-  const [pending, setPending] = useState<{ side: string; size: number; price: number; type: string } | null>(null)
   const [picked, setPicked] = useState<{ steps: number; timestamp: number } | null>(null)
   const [mine, setMine] = useState<OpenOrderRow[] | null>(null)
 
@@ -97,7 +145,6 @@ export function OrderDialog({
     setOutcome(null)
     setFatal(null)
     setNotice(null)
-    setPending(null)
     setPicked(null)
   }, [tokenId])
 
@@ -153,9 +200,19 @@ export function OrderDialog({
       })
       setOutcome(r)
       if (r.ok) {
-        setPending(null)
         void depth.refresh()
         setMine(null) // 挂单列表已过期，下次点开重拉
+        // 本盘口的持仓/成交**立刻重拉**。它的 staleTime 是 30 秒，而这一段在弹窗里
+        // 是**开着**的 —— 不主动刷就一直是下单之前那份（多半是空的），看起来正好是
+        // 「成交了却查不到」。30 秒的缓存对「打开弹窗看一眼」是合理的，
+        // 对「刚下完单」不是。
+        orders.refresh()
+        // 成交要等 data-api 索引完才出现，紧接的那一次多半还是空的，隔几秒补一次。
+        // 只是多一次 GET，不猜索引延迟到底几秒。
+        window.setTimeout(orders.refresh, 5000)
+        // 画布与比赛列表上的持仓角标走另一个 query（usePositions 的 ['positions']），
+        // 一并作废 —— 刚成交的那张盘口应当马上出现角标。
+        void queryClient.invalidateQueries({ queryKey: ['positions'] })
       }
     } catch (e) {
       setFatal(explainError(e))
@@ -268,6 +325,208 @@ export function OrderDialog({
                 tick={tick}
                 onPick={(price) => setPicked({ steps: toSteps(price, tick), timestamp: Date.now() })}
               />
+
+              {/*
+                我的订单。三段，**加载方式不同**，所以不是一个统一的列表：
+
+                  持仓中  未成交的委托。公开接口**没有**这份数据，只有 CLOB 的鉴权接口有 ——
+                          所以必须先建已认证客户端，而那会弹签名、还要本地签名服务在跑。
+                          因此保持**按需**点开，不随弹窗自动加载。
+                  持仓    已买入、正在持有的仓位。公开 REST，免鉴权，自动加载。
+                  完结    已结算 / 已平仓的仓位，加上成交明细。同上，自动加载。
+
+                三段各自独立失败：签名服务没起时「持仓中」点不开，另两段照常显示。
+                把它们合成一个列表就做不到这件事 —— 一处失败会拖垮全部。
+              */}
+              <div className="rounded-lg border border-border bg-card">
+                <div className="flex items-center justify-between gap-2 border-b border-border px-2.5 py-2">
+                  <span className="text-xs font-medium text-foreground">我的订单</span>
+                  <span className="text-[10px] text-muted-foreground">本盘口</span>
+                </div>
+
+                {/* ── 持仓中（未成交委托）── */}
+                <div className="border-b border-border">
+                  <button
+                    type="button"
+                    onClick={() => void loadMine()}
+                    disabled={!clob.readiness.ready || phase !== 'idle'}
+                    className="flex w-full items-center justify-between gap-2 px-2.5 py-2 text-left text-[11px] text-foreground hover:bg-muted/50 disabled:opacity-50"
+                  >
+                    <span className="font-medium">
+                      持仓中
+                      <span className="ml-1 text-muted-foreground">（挂单，未成交）</span>
+                      {mine && (
+                        <span className="ml-1.5 rounded-full bg-primary/10 px-1.5 py-0.5 text-[10px] text-primary">
+                          {mine.length}
+                        </span>
+                      )}
+                    </span>
+                    <span className="shrink-0 text-[10px] text-muted-foreground">
+                      {phase === 'listing' ? '读取中…' : mine ? '收起' : '点开（需签名一次）'}
+                    </span>
+                  </button>
+
+                  {mine &&
+                    (!mine.length ? (
+                      <p className="px-2.5 pb-2 text-[10px] text-muted-foreground">没有未成交的挂单</p>
+                    ) : (
+                      <div className="max-h-40 divide-y divide-border overflow-y-auto border-t border-border">
+                        {mine.map((o) => (
+                          <div key={o.id} className="flex items-center justify-between gap-2 p-2">
+                            <div className="min-w-0">
+                              <p className="text-[11px] text-foreground">
+                                <span
+                                  className={cn(
+                                    'mr-1.5 rounded px-1 py-0.5 text-[10px] font-medium',
+                                    o.side === 'BUY'
+                                      ? 'bg-success/10 text-success'
+                                      : 'bg-error/10 text-error',
+                                  )}
+                                >
+                                  {o.side === 'BUY' ? '买' : '卖'}
+                                </span>
+                                <span className="font-mono tnum">
+                                  {formatTickPrice(Number(o.price), tick)}
+                                </span>
+                                <span className="ml-1.5 font-mono tnum text-muted-foreground">
+                                  {o.sizeMatched}/{o.originalSize}
+                                </span>
+                              </p>
+                              <p className="truncate font-mono text-[10px] text-muted-foreground">
+                                {o.assetId === tokenId ? '本盘口' : `${o.assetId.slice(0, 10)}…`} ·{' '}
+                                {o.orderType}
+                              </p>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => void doCancel(o.id)}
+                              disabled={phase !== 'idle'}
+                              className="shrink-0 rounded border border-error/30 bg-error/10 px-1.5 py-0.5 text-[10px] font-medium text-error hover:bg-error/20 disabled:opacity-50"
+                            >
+                              撤单
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    ))}
+                </div>
+
+                {/*
+                  下面三段（持仓 / 成交 / 完结）来自**同一个查询**（useMarketOrders），
+                  所以「读取中 / 读不到」只在这里报一次。在三段里各写一遍的话会同时出现
+                  「读取中…」和「这张盘口没有持仓」—— 自相矛盾，而且正好出现在最需要
+                  可信的地方。
+                */}
+                {orders.loading ? (
+                  <p className="border-b border-border px-2.5 py-2 text-[10px] text-muted-foreground">
+                    读取中…
+                  </p>
+                ) : orders.error ? (
+                  <p className="border-b border-border px-2.5 py-2 text-[10px] text-warning">
+                    读不到持仓与成交：{orders.error}
+                  </p>
+                ) : null}
+
+                {/* ── 持仓（已买入）── */}
+                <div className="border-b border-border px-2.5 py-2">
+                  <p className="text-[11px] font-medium text-foreground">
+                    持仓
+                    <span className="ml-1 text-muted-foreground">（已买入）</span>
+                    {held.length > 0 && (
+                      <span className="ml-1.5 rounded-full bg-primary/10 px-1.5 py-0.5 text-[10px] text-primary">
+                        {held.length}
+                      </span>
+                    )}
+                  </p>
+                  {ordersReady &&
+                    (!held.length ? (
+                      <p className="mt-1 text-[10px] text-muted-foreground">这张盘口没有持仓</p>
+                    ) : (
+                      <div className="mt-1.5 space-y-1.5">
+                        {held.map((p) => (
+                          <PositionRow key={p.asset} p={p} />
+                        ))}
+                      </div>
+                    ))}
+                </div>
+
+                {/*
+                  ── 成交（明细）──
+
+                  **单独一段，不并进「完结」。** 成交是「这笔单成交了」这个事实，
+                  与「这张盘有没有结算/平掉」是两件事：比赛还没开哨时买入，成交马上
+                  就有，而完结要等到结算 —— 把成交挂在「完结（已结算 / 已平仓）」
+                  下面是**说反了**，实测就是这么被指出来的（截图里比赛还没开始，
+                  那笔买单却躺在「完结」里）。
+                */}
+                <div className="border-b border-border px-2.5 py-2">
+                  <p className="text-[11px] font-medium text-foreground">
+                    成交
+                    <span className="ml-1 text-muted-foreground">（明细）</span>
+                    {orders.trades.length > 0 && (
+                      <span className="ml-1.5 rounded-full bg-primary/10 px-1.5 py-0.5 text-[10px] text-primary">
+                        {orders.trades.length}
+                      </span>
+                    )}
+                  </p>
+                  {ordersReady &&
+                    (!orders.trades.length ? (
+                      <p className="mt-1 text-[10px] text-muted-foreground">这张盘口没有成交记录</p>
+                    ) : (
+                      <div className="mt-1.5 max-h-40 divide-y divide-border overflow-y-auto rounded border border-border">
+                        {orders.trades.map((t) => (
+                          <div
+                            key={`${t.transactionHash}:${t.asset}:${t.timestamp}`}
+                            className="flex items-baseline justify-between gap-2 px-2 py-1.5"
+                          >
+                            <span className="min-w-0 text-[10px] text-foreground">
+                              <span
+                                className={cn(
+                                  'mr-1.5 rounded px-1 py-0.5 text-[10px] font-medium',
+                                  t.side === 'BUY'
+                                    ? 'bg-success/10 text-success'
+                                    : 'bg-error/10 text-error',
+                                )}
+                              >
+                                {t.side === 'BUY' ? '买' : '卖'}
+                              </span>
+                              <span className="text-muted-foreground">{t.outcome}</span>
+                              <span className="ml-1.5 font-mono tnum">
+                                {t.size} @ {t.price.toFixed(3)}
+                              </span>
+                            </span>
+                            <span className="shrink-0 font-mono text-[10px] text-muted-foreground">
+                              {formatTradeTime(t.timestamp)}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    ))}
+                </div>
+
+                {/* ── 完结（已结算 / 已平仓）── 只有仓位，成交明细在上面的「成交」里 */}
+                <div className="px-2.5 py-2">
+                  <p className="text-[11px] font-medium text-foreground">
+                    完结
+                    <span className="ml-1 text-muted-foreground">（已结算 / 已平仓）</span>
+                    {settled.length > 0 && (
+                      <span className="ml-1.5 rounded-full bg-primary/10 px-1.5 py-0.5 text-[10px] text-primary">
+                        {settled.length}
+                      </span>
+                    )}
+                  </p>
+                  {ordersReady &&
+                    (!settled.length ? (
+                      <p className="mt-1 text-[10px] text-muted-foreground">这张盘口没有已结算的仓位</p>
+                    ) : (
+                      <div className="mt-1.5 space-y-1.5">
+                        {settled.map((p) => (
+                          <PositionRow key={p.asset} p={p} settled />
+                        ))}
+                      </div>
+                    ))}
+                </div>
+              </div>
             </div>
 
             {/* 右：余额 + 表单 / 确认 / 结果 */}
@@ -279,44 +538,32 @@ export function OrderDialog({
                 </span>
               </div>
 
-              {pending ? (
-                <ConfirmPanel
-                  pending={pending}
+              <div className="rounded-lg border border-border bg-card p-3">
+                <OrderForm
+                  // key 让切侧时整个表单重挂：限价初始值是 useState 只算一次的，
+                  // 不重挂就会把 Over 的限价留在 Under 上（两侧是互补价）
+                  key={`${tokenId}:${tick}`}
+                  outcomeName={sideName}
+                  bestBid={bestBid}
+                  bestAsk={bestAsk}
+                  fallbackPrice={fallbackPrice}
                   tick={tick}
                   feeBps={feeBps}
-                  busy={phase === 'placing'}
-                  onBack={() => setPending(null)}
-                  onConfirm={() => void doPlace(pending)}
+                  minShares={minShares}
+                  maxAmount={balance}
+                  externalPrice={picked}
+                  submitting={phase === 'placing'}
+                  blockedReason={blockedReason}
+                  // 表单里点「买入/卖出」直接下单，不再过确认面板。
+                  // 表单已展示单价/份额/本金/手续费/合计，够看清这笔要花多少了。
+                  onSubmit={(v) => {
+                    setOutcome(null)
+                    setFatal(null)
+                    setNotice(null)
+                    void doPlace(v)
+                  }}
                 />
-              ) : (
-                <div className="rounded-lg border border-border bg-card p-3">
-                  <OrderForm
-                    // key 让切侧时整个表单重挂：限价初始值是 useState 只算一次的，
-                    // 不重挂就会把 Over 的限价留在 Under 上（两侧是互补价）
-                    key={`${tokenId}:${tick}`}
-                    outcomeName={sideName}
-                    marketQuestion={marketQuestion}
-                    bestBid={bestBid}
-                    bestAsk={bestAsk}
-                    fallbackPrice={fallbackPrice}
-                    tick={tick}
-                    feeBps={feeBps}
-                    minShares={minShares}
-                    maxAmount={balance}
-                    externalPrice={picked}
-                    submitting={phase === 'placing'}
-                    blockedReason={blockedReason}
-                    // 不直接下单：先过一道确认。这笔单会真的动钱，
-                    // 而钱包弹窗只显示签名内容，看不出「总共花多少」
-                    onSubmit={(v) => {
-                      setOutcome(null)
-                      setFatal(null)
-                      setNotice(null)
-                      setPending(v)
-                    }}
-                  />
-                </div>
-              )}
+              </div>
 
               {fatal && (
                 <p className="rounded-md border border-warning/30 bg-warning/10 px-2.5 py-1.5 text-[11px] leading-snug text-warning">
@@ -355,72 +602,6 @@ export function OrderDialog({
                   </div>
                 ))}
 
-              {/* 我的挂单。**按需**加载 —— 读它也要先建已认证客户端，
-                  而建客户端会让用户签一次名，不能打开弹窗就弹。 */}
-              <button
-                type="button"
-                onClick={() => void loadMine()}
-                disabled={!clob.readiness.ready || phase !== 'idle'}
-                className="flex w-full items-center justify-between rounded-lg border border-border bg-card px-2.5 py-2 text-left text-xs text-foreground hover:bg-muted/50 disabled:opacity-50"
-              >
-                <span className="font-medium">
-                  我的挂单
-                  {mine && (
-                    <span className="ml-1.5 rounded-full bg-primary/10 px-1.5 py-0.5 text-[10px] text-primary">
-                      {mine.length}
-                    </span>
-                  )}
-                </span>
-                <span className="text-[10px] text-muted-foreground">
-                  {phase === 'listing' ? '读取中…' : mine ? '收起' : '点开（需签名一次）'}
-                </span>
-              </button>
-
-              {mine && (
-                <div className="max-h-56 overflow-y-auto rounded-lg border border-border bg-card">
-                  {!mine.length ? (
-                    <p className="p-3 text-center text-[11px] text-muted-foreground">没有挂单</p>
-                  ) : (
-                    <div className="divide-y divide-border">
-                      {mine.map((o) => (
-                        <div key={o.id} className="flex items-center justify-between gap-2 p-2">
-                          <div className="min-w-0">
-                            <p className="text-[11px] text-foreground">
-                              <span
-                                className={cn(
-                                  'mr-1.5 rounded px-1 py-0.5 text-[10px] font-medium',
-                                  o.side === 'BUY'
-                                    ? 'bg-success/10 text-success'
-                                    : 'bg-error/10 text-error',
-                                )}
-                              >
-                                {o.side === 'BUY' ? '买' : '卖'}
-                              </span>
-                              <span className="font-mono tnum">
-                                {formatTickPrice(Number(o.price), tick)}
-                              </span>
-                              <span className="ml-1.5 font-mono tnum text-muted-foreground">
-                                {o.sizeMatched}/{o.originalSize}
-                              </span>
-                            </p>
-                            <p className="truncate font-mono text-[10px] text-muted-foreground">
-                              {o.assetId === tokenId ? '本盘口' : `${o.assetId.slice(0, 10)}…`} · {o.orderType}
-                            </p>
-                          </div>
-                          <button
-                            type="button"
-                            onClick={() => void doCancel(o.id)}
-                            disabled={phase !== 'idle'}
-                            className="shrink-0 rounded border border-error/30 bg-error/10 px-1.5 py-0.5 text-[10px] font-medium text-error hover:bg-error/20 disabled:opacity-50"
-                          >
-                            撤单
-                          </button>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              )}
             </div>
           </div>
         </div>
@@ -431,118 +612,55 @@ export function OrderDialog({
 }
 
 /**
- * 确认面板。
+ * 一条仓位。
  *
- * 这一层不是「多点一下」的形式主义：钱包弹窗只显示要签的 EIP-712 结构，
- * 人看不懂里面的 makerAmount 是几美元。而动钱的判断要用**美元和份额**做。
+ * 显示的是**这一侧**的仓位 —— 一张盘口两侧（Over/Under）各有自己的 token，两侧都可能
+ * 有仓位，所以 `outcome` 必须显示出来，否则两行长得一样分不清是哪边。
  *
- * ## 总额必须是税前 + 手续费
- *
- * `份额 × 单价` 是**税前**的数 —— SDK 的 `amount` 参数文档写的是
- * "before market and builder taker fees"，`maxSpend` 才是 "all-in"。
- * 把它直接标成「总额」，用户实际被扣的会比看到的多，而多的那部分正是本平台的
- * 手续费。用户发现的方式不会是想「平台收费了」，而是「这站骗我」。
- *
- * 费率由调用方查好传来（`useBuilderFeeRates` 取 maker/taker 里**较高**的那个：
- * 市价单必然是 taker；限价单挂上去成交时可能是 maker（通常更便宜），但事先不知
- * 道会怎么成交，所以按高的报。报多了用户不会生气，报少了才是问题）。
- *
- * 这里**不自己查**：同一笔单的表单和确认面板必须显示同一个费率，各查一次就有了
- * 分叉的可能 —— 而那种分叉的表现是「上一步说 0.05%，这一步说别的」。
- *
- * 卖出的方向是**反**的：手续费从成交额里扣，到手的是本金减去费。所以这里的
- * 数字与标题都从 `settleOf` 按方向取，不在这一层自己拼 —— 拼错方向就是「标题
- * 写实际扣款、数字是到账」。
- *
- * 下面那段风险提示必须留 —— 它讲的四件事都是真的且影响这笔钱。
+ * 盈亏按方向着色，`settled` 时取**已实现**盈亏而不是浮动盈亏：仓位已经不在场上了，
+ * 浮动盈亏对它没有意义（结算后 curPrice 会被推到 0 或 1，拿它算出来的浮盈是假的）。
  */
-function ConfirmPanel({
-  pending,
-  tick,
-  feeBps,
-  busy,
-  onBack,
-  onConfirm,
-}: {
-  pending: { side: string; size: number; price: number; type: string }
-  tick: TickSize
-  /** 展示用的费率，bps。已由调用方取过 max(maker, taker) */
-  feeBps: number
-  busy: boolean
-  onBack: () => void
-  onConfirm: () => void
-}) {
-  const cost = feeBreakdown(pending.size, pending.price, feeBps)
-  const buy = pending.side === 'BUY'
-  const settle = settleOf(cost, buy ? 'BUY' : 'SELL')
+function PositionRow({ p, settled }: { p: PolyPosition; settled?: boolean }) {
+  const pnl = settled ? p.realizedPnl : p.cashPnl
   return (
-    <div className="space-y-2 rounded-lg border border-primary/40 bg-primary/5 p-3">
-      <p className="text-xs font-semibold text-foreground">确认这一笔</p>
-      <div className="space-y-1 text-[11px]">
-        <Row k="方向" v={buy ? '买入' : '卖出'} />
-        <Row k="类型" v={pending.type === 'limit' ? '限价（挂单，可能不成交）' : '市价（立即吃单）'} />
-        <Row k="单价" v={`${formatTickPrice(pending.price, tick)}（${tick} 档）`} />
-        <Row k="份额" v={String(pending.size)} />
-        <Row k="本金" v={`$${cost.notionalUsd.toFixed(2)}`} />
-        {feeBps > 0 && (
-          <Row k={`手续费（${cost.rateLabel}）`} v={formatFeeAmount(cost.feeUsd)} />
-        )}
-        <Row k={settle.label} v={`$${settle.usd.toFixed(2)}`} strong />
-      </div>
-
-      <div className="space-y-1 rounded border border-warning/30 bg-warning/10 p-2 text-[10px] leading-snug text-warning">
-        {feeBps > 0 && (
-          <p>
-            · 本平台按成交额收 <span className="font-semibold">{cost.rateLabel}</span> 的手续费，
-            已含在上面「合计」里。
-            <span className="font-semibold">Polymarket 官方站不收这笔钱</span>
-            —— 觉得不值可以改用官方站下单。
-          </p>
-        )}
-        <p>
-          · 首次下单会先让你在钱包里签一次名，用来派生 API key（L1 消息，
-          <span className="font-semibold">不上链、不花 gas</span>）。之后同一会话不再问。
-        </p>
-        <p>
-          · 这条下单路径在本项目里<span className="font-semibold">从未真正跑通过</span>。
-          建议先拿最小份额试一笔。
-        </p>
-        <p>
-          · 上游那次供应链事故的待办（转移资金、重新派生 CLOB key）还没做完，
-          用同一个钱包下单会继承那份风险。
-        </p>
-      </div>
-
-      <div className="flex gap-2">
-        <button
-          type="button"
-          onClick={onBack}
-          disabled={busy}
-          className="flex-1 rounded-md border border-border px-2 py-1.5 text-xs text-foreground hover:bg-muted disabled:opacity-50"
-        >
-          返回
-        </button>
-        <button
-          type="button"
-          onClick={onConfirm}
-          disabled={busy}
+    <div className="rounded border border-border bg-background px-2 py-1.5">
+      <div className="flex items-baseline justify-between gap-2">
+        <span className="min-w-0 truncate text-[11px] text-foreground">
+          {settled && (
+            <span className="mr-1.5 rounded bg-muted px-1 py-0.5 text-[10px] text-muted-foreground">
+              {p.redeemable ? '已结算' : '已平仓'}
+            </span>
+          )}
+          <span className="font-medium">{p.outcome || '—'}</span>
+          <span className="ml-1.5 font-mono tnum text-muted-foreground">{p.size} 份</span>
+        </span>
+        <span
           className={cn(
-            'flex-1 rounded-md px-2 py-1.5 text-xs font-semibold text-background disabled:opacity-50',
-            buy ? 'bg-success' : 'bg-error',
+            'shrink-0 font-mono tnum text-[11px] font-semibold',
+            pnl > 0 ? 'text-success' : pnl < 0 ? 'text-error' : 'text-muted-foreground',
           )}
         >
-          {busy ? '提交中…' : '确认下单'}
-        </button>
+          {pnl >= 0 ? '+' : '−'}${Math.abs(pnl).toFixed(2)}
+        </span>
       </div>
+      <p className="mt-0.5 font-mono text-[10px] tnum text-muted-foreground">
+        均价 {p.avgPrice.toFixed(3)}
+        {!settled && ` · 现价 ${p.curPrice.toFixed(3)} · 市值 $${p.currentValue.toFixed(2)}`}
+        {!settled && p.percentPnl !== 0 && ` · ${p.percentPnl > 0 ? '+' : '−'}${Math.abs(p.percentPnl).toFixed(1)}%`}
+      </p>
     </div>
   )
 }
 
-function Row({ k, v, strong }: { k: string; v: string; strong?: boolean }) {
-  return (
-    <div className="flex items-baseline justify-between gap-2">
-      <span className="text-muted-foreground">{k}</span>
-      <span className={cn('font-mono tnum text-foreground', strong && 'font-semibold')}>{v}</span>
-    </div>
-  )
+/**
+ * 成交时间。
+ *
+ * ⚠️ data-api 的 `timestamp` 是**秒**，不是毫秒 —— 直接喂 `new Date()` 会得到 1970 年。
+ * 只显示到分钟：秒对「我什么时候买的」没有意义。
+ */
+function formatTradeTime(sec: number): string {
+  if (!Number.isFinite(sec) || sec <= 0) return '—'
+  const d = new Date(sec * 1000)
+  const p = (n: number) => String(n).padStart(2, '0')
+  return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
 }

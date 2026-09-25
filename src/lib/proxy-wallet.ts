@@ -12,16 +12,42 @@
  * 下单时同样要区分两个地址：
  *   - signer  = EOA，负责 EIP-712 签名，**也是 L2 认证头 POLY_ADDRESS 的值**
  *   - funder  = 代理地址（订单里的 maker / SDK 的 account wallet），资金在那
- *   - signatureType = 3（DEPOSIT_WALLET），不是 EOA 的 0
+ *   - signatureType = **2（POLY_GNOSIS_SAFE）**，不是 EOA 的 0 —— 见下方「订正」
  *
  * ⚠️ 早先这里写的是「POLY_ADDRESS 必须是代理地址」，**那是错的**，已订正。
  * POLY_ADDRESS 恒为**签名地址**，账户钱包只作为订单的 maker 出现。搞反会
  * 得到 401，而且报错看起来很像「配置错了」，很容易往凭据过期那条路上查。
  * 这一条在交易端项目里也踩过一次（见 src/api/clob-v2.ts 的表头注释）。
  *
- * 另外 signatureType 的口径：3 的官方名是 DEPOSIT_WALLET，社区叫 POLY_1271
- * （因为 Deposit Wallet 走 ERC-1271 验签）。两者指同一个值，别当成两个类型。
- * 三者对不上，CLOB 会拒单或返回令人费解的错误。
+ * 另外 signatureType 的口径：0=EOA、1=POLY_PROXY、2=POLY_GNOSIS_SAFE、
+ * 3=POLY_1271（官方文档里也叫 DEPOSIT_WALLET，因为 Deposit Wallet 走 ERC-1271
+ * 验签）。三者对不上，CLOB 会拒单或返回令人费解的错误。
+ *
+ * ## ⚠️ 订正（2026-09-24，已从 SDK 源码定死）：本账户的 proxyWallet 是 Gnosis Safe，不是 Deposit Wallet
+ *
+ * 早先这里（和 clob-client.ts 顶部）写「本账户 signatureType=3（DEPOSIT_WALLET）」，
+ * **那是假设，错的**。实际观察 + SDK 源码双向确认，本账户是 **signatureType=2
+ * （POLY_GNOSIS_SAFE）**：
+ *
+ *  - MetaMask 签名弹窗里 `SignatureType` 字段是 `2`（用户截图）。
+ *  - SDK 用 `Eh(config, signer, wallet)` 解析账户身份，内部 `Nc()` 把传入的 wallet
+ *    地址逐一比对四种确定性派生：Deposit Wallet（`Nn`/`Hn`，depositWalletFactory）、
+ *    **Gnosis Safe（`Ac`，safeFactory + safeInitCodeHash 的 CREATE2）**、
+ *    Proxy（`kc`，proxyFactory）。只有当 `wallet === Ac(signer)` 时才判成
+ *    GNOSIS_SAFE。gamma 返回的 proxyWallet 命中的正是 `Ac(signer)`。
+ *
+ * 后果（这就是「从未下成一笔单」的根因）：v2 CLOB 拒单
+ * `maker address not allowed, please use the deposit wallet flow` —— 但注意，这
+ * **不代表要真的去用 Deposit Wallet**：官方文档明说 legacy Safe/Proxy 用户
+ * 「可继续用现有钱包」，这个 Safe **就是**用户的账户、钱也在里面。这条拒单是
+ * Polymarket 自己 v2 接口对 Safe 账户的**已知未修 issue**（py-clob-client-v2 #90
+ * 同款报错），不是本仓库 bug。
+ *
+ * ⚠️ 别再走「不传 wallet → Deposit Wallet flow」那条路（试过、已回退）：本账户是
+ * legacy Safe，它的 Deposit Wallet 是**另一个从未部署、余额为 0** 的地址；免 gas
+ * 部署它还要一个不能进纯前端包的 relayer/builder API key。可能的真正修法是改用
+ * **旧版 `@polymarket/clob-client`（v1，仓库已装）** 下 Safe 单。详见
+ * WALLET-HANDOFF.md「更新 3」。
  *
  * ## 代理地址怎么拿
  *

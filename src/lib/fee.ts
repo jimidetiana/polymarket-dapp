@@ -34,16 +34,16 @@
  *
  * 与 lib/tick.ts 的「内部一律用整数」、clob-client 的「钱的数不裸浮点」看着
  * 矛盾，其实不是：**输入本身就是浮点**（表单给的份额与单价），而且这里算的是
- * **展示用的预估值** —— 真正扣多少由交易所按整数算，以 `listBuilderTrades`
- * 回执里的 `feeUsdc` 为准。把表单值硬转 bigint 只会把一个显示问题变成一个
- * 精度问题。
+ * **展示用的预估值** —— 真正扣多少由交易所按 6 位小数的 USDC 精确算，以
+ * `listBuilderTrades` 回执里的 **`builderFee`** 为准（不是 `feeUsdc`，那是
+ * Polymarket 平台自己收的费，与本平台无关）。把表单值硬转 bigint 只会把一个显示
+ * 问题变成一个精度问题。
  *
- * ## 还不确定的一条
+ * ## 计费口径（已实测确认）
  *
- * 费率是**按成交名义额**（份额 × 单价）算的 —— 这是行业惯例，也符合
- * `*_fee_rate_bps` 这个命名，但我**没有实测确认**。拿到 builder code、跑通
- * 第一笔之后，拿 `listBuilderTrades({builderCode})` 里的 `feeUsdc` 对一下：
- * 对上就删掉这段，对不上就改公式。
+ * 费率**按成交名义额**（份额 × 单价）算。2026-09-25 拿真实 builder code 跑通后
+ * 核对过 `/builder/trades` 回执：`builderFee` 恒 = `sizeUsdc × 5 bps`（分以下的
+ * 小数），公式对上了。所以下面 `feeUsdOf` 精确到分以下，不再向上取整。
  */
 
 /**
@@ -101,30 +101,28 @@ export function bpsLabel(bps: number): string {
 }
 
 /**
- * 手续费，**单位是分**，向上取整。
+ * 精确手续费，单位**美元**（浮点，不取整到分）。
  *
- * 两个刻意的决定：
+ * = 名义额 × bps ÷ 10000，再对齐到 USDC 的 6 位小数。
  *
- *  1. **向上取整** —— 宁可显示得比实际多一丁点，也绝不少报。少报的是我们自己的
- *     收入，而且用户看到的总额会低于真实扣款。单笔误差 ≤ 1 分。
- *  2. 减 `1e-9` 再 ceil —— 防浮点误差把本该整分的值顶上去。$100 × 5bps 在浮点下
- *     可能是 4.999999999，直接 ceil 就成了 5 分（其实也是 5 分，但 $20 × 5bps
- *     这类本该 1 分的会被顶成 2 分）。
+ * ## 为什么不再向上取整到分
  *
- * 副作用要说清楚：小额单上相对误差很大。$1 的单实际收 $0.005，这里给 1 分 ——
- * 20 倍。绝对误差永远是 1 分以内，但**别拿这个数去反推有效费率**。
+ * 早先的实现把它 ceil 到整分，本意是「买入合计绝不少报」。代价是小额单严重
+ * 偏离真实值：$2.90 的单 5 bps 实收 $0.00145，却显示成 $0.01 —— 7 倍。而交易所
+ * 本就按 6 位小数的 USDC 精确扣，`builderFee` 回执也是分以下的小数，精确显示
+ * 才对得上账。方向上的安全没有丢，只是挪到了**显示层**：买入合计与卖出到账由
+ * `formatMoney` 按分显示、分以下的尾数如实带出，不再靠预先 ceil 去撑。
  */
-export function feeCentsOf(notionalUsd: number, bps: number): number {
+export function feeUsdOf(notionalUsd: number, bps: number): number {
   if (!Number.isFinite(notionalUsd) || notionalUsd <= 0) return 0
   if (!Number.isFinite(bps) || bps <= 0) return 0
-  const raw = (notionalUsd * 100 * bps) / 10_000
-  return Math.ceil(raw - 1e-9)
+  return Math.round(((notionalUsd * bps) / 10_000) * 1e6) / 1e6
 }
 
 export type FeeBreakdown = {
   /** 份额 × 单价，税前 */
   notionalUsd: number
-  /** 手续费（分，向上取整） */
+  /** 手续费（美元，精确到 USDC 的 6 位小数，不取整到分） */
   feeUsd: number
   /** 买入实际付出：notionalUsd + feeUsd */
   totalUsd: number
@@ -148,12 +146,16 @@ export type FeeBreakdown = {
  */
 export function feeBreakdown(size: number, price: number, bps: number): FeeBreakdown {
   const notionalUsd = Math.round(size * price * 100) / 100
-  const feeUsd = feeCentsOf(notionalUsd, bps) / 100
+  const feeUsd = feeUsdOf(notionalUsd, bps)
+  // 合计/到账按 USDC 的 6 位小数对齐（不再压到 2 位）—— 压到分会把分以下的手续费
+  // 从合计里抹掉，界面上就成了「手续费 $0.0015，合计却没变」。6 位是交易所的
+  // 真实精度，显示层再由 formatMoney 决定给几位。
+  const round6 = (n: number) => Math.round(n * 1e6) / 1e6
   return {
     notionalUsd,
     feeUsd,
-    totalUsd: Math.round((notionalUsd + feeUsd) * 100) / 100,
-    proceedsUsd: Math.round((notionalUsd - feeUsd) * 100) / 100,
+    totalUsd: round6(notionalUsd + feeUsd),
+    proceedsUsd: round6(notionalUsd - feeUsd),
     rateLabel: bpsLabel(bps),
   }
 }
@@ -182,16 +184,28 @@ export function settleOf(
 }
 
 /**
- * 手续费那行怎么显示。
+ * 金额显示：默认到分，**有分以下的尾数就如实带出**（最多 6 位，去掉尾零）。
  *
- * ## 为什么金额小时要加小数位
+ * 合计/到账那一行用它。$100.05 显示 `$100.05`；而 $2.90 本金 + $0.00145 手续费
+ * 的合计 $2.90145 会显示成 `$2.90145`，不会被压成 `$2.90` 把手续费吞掉。
+ * 6 位是 USDC 的精度上限，再多没有意义。
+ */
+export function formatMoney(usd: number): string {
+  if (!Number.isFinite(usd)) return '$0.00'
+  const toCents = Math.round(usd * 100) / 100
+  if (Math.abs(usd - toCents) < 5e-7) return `$${toCents.toFixed(2)}`
+  return `$${usd.toFixed(6).replace(/0+$/, '')}`
+}
+
+/**
+ * 手续费那行怎么显示 —— **精确到分以下**，不再向上取整。
  *
- * 5 bps 下 $10 的单手续费是 $0.005，两位小数显示成 **$0.00** ——
- * 「显示 0 但实际扣了钱」比不显示更糟。所以金额小于 1 分时给到 4 位小数。
- * 费率文案（"0.05%"）无论如何都显示，它是金额被舍成 0 时唯一还说得清的东西。
+ * 5 bps 下 $2.90 的单手续费是 $0.00145，就照实显示 `$0.00145`，而不是撑成 $0.01。
+ * ≥ 1 分的走 `formatMoney`（$0.05 显示 `$0.05`，$0.0525 显示 `$0.0525`）；不足 1 分
+ * 的给到 6 位小数、去尾零。费率文案（"0.05%"）无论如何都在，是金额极小时的兜底。
  */
 export function formatFeeAmount(feeUsd: number): string {
   if (!Number.isFinite(feeUsd) || feeUsd <= 0) return '$0.00'
-  if (feeUsd < 0.01) return `$${feeUsd.toFixed(4)}`
-  return `$${feeUsd.toFixed(2)}`
+  if (feeUsd >= 0.01) return formatMoney(feeUsd)
+  return `$${feeUsd.toFixed(6).replace(/0+$/, '')}`
 }

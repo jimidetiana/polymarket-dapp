@@ -155,9 +155,22 @@ export function useOrderBook(assetId: string | null, enabled: boolean) {
  * 拦住用户下单来回避一个显示问题,是拿大代价换小问题。**不做「读取中」态,也不
  * 因为查不到而禁用按钮**:这是个提示,不是一道关卡。
  *
- * 但**不一致要留个响**:常量与 API 的值不同,说明设置页改过而代码没跟上。平时
- * 界面用 API 的值是对的,可一旦 API 失败就会退回那个过期的常量并报出错的数,而
- * 界面上看不出任何异常。控制台这一行是那种情况唯一的信号。
+ * ## 费率提示要一直在,拿不到就退回常量
+ *
+ * 判据是「拿不到 **或** 是 0 都退回常量」,理由见函数体里那行注释:这个提示是
+ * 「本平台收多少」的告知,不是「后台此刻配了没有」的仪表盘,不该因为一个拿不到的
+ * 数是 0 就整个消失。
+ *
+ * ## 控制台那一行不一致要留个响
+ *
+ * 常量与 API 不同时响。**先看清楚成因再动手**:API 是 0,说明设置页那边把费率配成
+ * 了 0(此时**不该**把常量跟着改成 0,那会把费率提示一起关掉);API 是个非 0 的别的
+ * 数,才说明常量过期,该把常量改成 API 那个值。
+ *
+ * ⚠️ 排查这类不一致时**先确认单位**。SDK 返回的是**小数不是 bps**(见 clob-client.ts
+ * 的 fetchFeeRates),单位搞错会让这里报出一个差 10000 倍的值 —— 2026-09 就踩过一次,
+ * 当时误判成「设置页改了还没生效」,实际是 `0.05%` 被当成了 `0.0005 bps`,
+ * 而费率其实早就生效了。
  */
 export function useBuilderFeeRates(): { feeBps: number } {
   const q = useQuery({
@@ -173,17 +186,34 @@ export function useBuilderFeeRates(): { feeBps: number } {
       q.data.makerBps !== BUILDER_FEE_RATES.makerBps || q.data.takerBps !== BUILDER_FEE_RATES.takerBps
     if (!stale) return
     console.warn(
-      `[fee] 设置页的费率与 lib/fee.ts 的 BUILDER_FEE_RATES 不一致:` +
+      `[fee] API 的费率与 lib/fee.ts 的 BUILDER_FEE_RATES 不一致:` +
         `API = maker ${q.data.makerBps} / taker ${q.data.takerBps} bps,` +
         `常量 = maker ${BUILDER_FEE_RATES.makerBps} / taker ${BUILDER_FEE_RATES.takerBps} bps。` +
-        `界面现在用 API 的值(对),但 API 一旦失败会退回那个过期的常量。请把常量改成一样的。`,
+        `先看清楚成因再动手:` +
+        `(a) API 是 0 —— 设置页把费率配成了 0,界面会退回常量;` +
+        `**不要**为了消掉这行就把常量改成 0,那会把费率提示一起关掉;` +
+        `(b) API 是个非 0 的别的数 —— 常量过期了,该把常量改成 API 那个值。` +
+        `⚠️ 动手前先确认单位:SDK 返回的是小数不是 bps,单位错了这里会报出差 10000 倍的值。`,
     )
   }, [q.data])
 
   // 只给 feeBps:调用方要的就是「报给用户的那个费率」,已经取过 max(maker, taker)。
   // 把原始的两个值也递出去只会让每个调用点各自再 max 一次 —— 那个方向错一次
   // 就会在界面少报手续费。
-  return { feeBps: maxBpsOf(q.data ?? BUILDER_FEE_RATES) }
+  //
+  // ⚠️ 判据是「拿不到 **或** 是 0」，**不是** `q.data ?? BUILDER_FEE_RATES`：
+  // 0 是个合法返回值，而 `??` 只在 null/undefined 时兜底，接不住它 —— 一旦
+  // `maxBpsOf` 得 0，界面上手续费那一行连同「合计（实际扣款）」会**整个消失**，
+  // 而费率提示本该一直在（它是「本平台收多少」的告知，不是「后台此刻配了没有」
+  // 的仪表盘）。
+  //
+  // 方向上也安全：退回常量只可能**多报**，而本项目的既有原则是宁可多报不可少报
+  // （见 lib/fee.ts 的 maxBpsOf）。
+  //
+  // 代价说清楚：哪天真要关掉收费（设置页改成 0），这里会一直显示常量那个数 ——
+  // 那时该改的是常量本身（改成 0），不是这个判断。
+  const fromApi = q.data ? maxBpsOf(q.data) : 0
+  return { feeBps: fromApi > 0 ? fromApi : maxBpsOf(BUILDER_FEE_RATES) }
 }
 
 // ── 下单 ────────────────────────────────────────────────
@@ -206,33 +236,21 @@ export type ClobReadiness =
  */
 function useSecureClient() {
   const { address, isConnected, chainId } = useAccount()
-  const proxy = useProxyWallet()
   const { data: walletClient } = useWalletClient()
 
   const readiness = useMemo<ClobReadiness>(() => {
     if (!isConnected || !address) return { ready: false, reason: '未连接钱包' }
     if (chainId !== 137) return { ready: false, reason: '钱包不在 Polygon 网络' }
-    if (proxy.isLoading) return { ready: false, reason: '正在解析代理钱包…' }
-    if (proxy.status === 'no-account') {
-      return {
-        ready: false,
-        reason: '这个地址还没在 Polymarket 开户，没有代理钱包。先去 polymarket.com 用同一个钱包存一次款。',
-      }
-    }
-    if (proxy.error) return { ready: false, reason: `代理钱包查询失败：${proxy.error}` }
-    if (!proxy.proxyAddr) return { ready: false, reason: '代理钱包地址还没拿到' }
     if (!walletClient) return { ready: false, reason: '钱包客户端还没就绪，稍等一秒再试' }
     return { ready: true }
-  }, [isConnected, address, chainId, proxy, walletClient])
+  }, [isConnected, address, chainId, walletClient])
 
+  // get() 惰性建已认证客户端：首次会让用户签名（派生 L2 凭据；按需免 gas 部署
+  // Deposit Wallet / 设授权），之后缓存在模块级 Map 里。
   const get = useCallback(async () => {
     if (!readiness.ready) throw new Error(readiness.reason)
-    return getSecureClient({
-      eoa: address as string,
-      accountWallet: proxy.proxyAddr as string,
-      walletClient: walletClient as WalletClient,
-    })
-  }, [readiness, address, proxy.proxyAddr, walletClient])
+    return getSecureClient({ eoa: address as string, walletClient: walletClient as WalletClient })
+  }, [readiness, address, walletClient])
 
   return { readiness, get }
 }
