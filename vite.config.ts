@@ -27,6 +27,9 @@ export default defineConfig({
   server: {
     // 监听所有网卡（0.0.0.0），允许局域网/远程通过本机 IP 访问 5173
     host: true,
+    // Vite 会校验请求 Host 头，用主机名（如 Tailscale MagicDNS / .ts.net）访问会被
+    // "Blocked request. This host is not allowed." 拦掉。开发期放开所有 host。
+    allowedHosts: true,
     proxy: {
       '/api': {
         target: `http://localhost:${process.env.SIGN_SERVER_PORT || 8787}`,

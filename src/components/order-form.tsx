@@ -25,6 +25,7 @@ import {
 } from '../lib/tick'
 import { feeBreakdown, formatFeeAmount, formatMoney, settleOf } from '../lib/fee'
 import type { OrderKind, OrderSideName } from '../lib/clob-client'
+import { tr } from '../lib/i18n'
 
 /** 与原项目同值。真正的下限还受 CLOB 的 minOrderSize 约束，由调用方传进来 */
 const MIN_SHARES = 5
@@ -171,18 +172,31 @@ export function OrderForm({
   // 按钮 disabled 时**必须**给出原因。这些分支正好覆盖 valid 的每一项否定，
   // 所以只要 !valid 就一定有一句话（之前 `size > 0 &&` 的护栏会在 size 为 0/空时
   // 把「最少 N 份」吞掉，导致按钮灰着却无提示——已去掉那层护栏）。
+  const buy = side === 'BUY'
   const error = noMarketSide
-    ? `此刻没有${side === 'BUY' ? '卖盘' : '买盘'}，市价${side === 'BUY' ? '买' : '卖'}吃不到东西。改成限价挂一单，或者等有报价再来。`
+    ? tr(
+        `此刻没有${buy ? '卖盘' : '买盘'}，市价${buy ? '买' : '卖'}吃不到东西。改成限价挂一单，或者等有报价再来。`,
+        `There are no ${buy ? 'asks' : 'bids'} right now, so a market ${buy ? 'buy' : 'sell'} can't fill. Place a limit order, or wait for quotes.`,
+      )
     : size < minShares
-      ? `最少 ${minShares} 份（现在 ${Number.isFinite(size) ? size : 0}）`
+      ? tr(
+          `最少 ${minShares} 份（现在 ${Number.isFinite(size) ? size : 0}）`,
+          `Minimum ${minShares} shares (now ${Number.isFinite(size) ? size : 0})`,
+        )
       : !priceOk
-        ? `价格必须是 ${formatTickPrice(pb.min, tick)} ~ ${formatTickPrice(pb.max, tick)} 且落在 ${tick} 的网格上`
+        ? tr(
+            `价格必须是 ${formatTickPrice(pb.min, tick)} ~ ${formatTickPrice(pb.max, tick)} 且落在 ${tick} 的网格上`,
+            `Price must be ${formatTickPrice(pb.min, tick)} – ${formatTickPrice(pb.max, tick)} on a ${tick} tick`,
+          )
         : overBalance
           ? feeBps > 0
-            ? `超出可用余额 $${(maxAmount ?? 0).toFixed(2)}（本金 $${cost.notionalUsd.toFixed(2)} + 手续费 ${formatFeeAmount(cost.feeUsd)}）`
-            : `超出可用余额 $${(maxAmount ?? 0).toFixed(2)}`
+            ? tr(
+                `超出可用余额 $${(maxAmount ?? 0).toFixed(2)}（本金 $${cost.notionalUsd.toFixed(2)} + 手续费 ${formatFeeAmount(cost.feeUsd)}）`,
+                `Exceeds available balance $${(maxAmount ?? 0).toFixed(2)} (principal $${cost.notionalUsd.toFixed(2)} + fee ${formatFeeAmount(cost.feeUsd)})`,
+              )
+            : tr(`超出可用余额 $${(maxAmount ?? 0).toFixed(2)}`, `Exceeds available balance $${(maxAmount ?? 0).toFixed(2)}`)
           : total < MIN_AMOUNT
-            ? `总额至少 $${MIN_AMOUNT}`
+            ? tr(`总额至少 $${MIN_AMOUNT}`, `Total must be at least $${MIN_AMOUNT}`)
             : null
 
   const blocked = !!blockedReason
@@ -221,7 +235,7 @@ export function OrderForm({
                 : 'border-border bg-background text-muted-foreground hover:bg-muted',
             )}
           >
-            {s === 'BUY' ? '买入' : '卖出'}
+            {s === 'BUY' ? tr('买入', 'Buy') : tr('卖出', 'Sell')}
           </button>
         ))}
       </div>
@@ -240,22 +254,27 @@ export function OrderForm({
                 : 'border-border bg-background text-muted-foreground hover:bg-muted',
             )}
           >
-            {t === 'market' ? '市价' : '限价'}
+            {t === 'market' ? tr('市价', 'Market') : tr('限价', 'Limit')}
           </button>
         ))}
       </div>
 
       {type === 'market' ? (
         <p className="rounded-md border border-border bg-background px-2 py-1.5 text-[10px] leading-snug text-muted-foreground">
-          {side === 'BUY' ? '吃单买入' : '吃单卖出'}，最差可接受价就是此刻的
-          {side === 'BUY' ? '卖一 ' : '买一 '}
+          {tr(
+            `${buy ? '吃单买入' : '吃单卖出'}，最差可接受价就是此刻的${buy ? '卖一 ' : '买一 '}`,
+            `Takes liquidity; the worst acceptable price is the current best ${buy ? 'ask' : 'bid'} `,
+          )}
           <span className="font-mono text-foreground">{formatTickPrice(sidePrice, tick)}</span>
-          。盘口一动就挂不出去 —— 这是有意的：宁可没成交，也不按一个你没看见的价成交。
+          {tr(
+            '。盘口一动就挂不出去 —— 这是有意的：宁可没成交，也不按一个你没看见的价成交。',
+            '. If the book moves, it won’t fill — on purpose: better no fill than a fill at a price you didn’t see.',
+          )}
         </p>
       ) : (
         <div className="space-y-1.5">
           <div className="flex items-center gap-2">
-            <span className="w-12 shrink-0 text-[11px] text-muted-foreground">限价</span>
+            <span className="w-12 shrink-0 text-[11px] text-muted-foreground">{tr('限价', 'Limit')}</span>
             <button
               type="button"
               onClick={() => setLimitSteps((v) => clampSteps(v - 1))}
@@ -311,7 +330,7 @@ export function OrderForm({
                 : 'border-border text-muted-foreground hover:bg-muted',
             )}
           >
-            {m === 'shares' ? '按份额' : '按金额'}
+            {m === 'shares' ? tr('按份额', 'By shares') : tr('按金额', 'By amount')}
           </button>
         ))}
       </div>
@@ -319,7 +338,7 @@ export function OrderForm({
       <div className="space-y-1.5">
         <div className="flex items-center gap-2">
           <span className="w-12 shrink-0 text-[11px] text-muted-foreground">
-            {mode === 'shares' ? '份额' : '金额'}
+            {mode === 'shares' ? tr('份额', 'Shares') : tr('金额', 'Amount')}
           </span>
           <button
             type="button"
@@ -362,15 +381,15 @@ export function OrderForm({
       </div>
 
       <div className="space-y-1 rounded-md border border-border bg-background p-2.5 text-[11px]">
-        <SumRow k="单价" v={formatTickPrice(price, tick)} />
-        <SumRow k="份额" v={String(size)} />
-        <SumRow k="本金" v={`$${cost.notionalUsd.toFixed(2)}`} />
+        <SumRow k={tr('单价', 'Price')} v={formatTickPrice(price, tick)} />
+        <SumRow k={tr('份额', 'Shares')} v={String(size)} />
+        <SumRow k={tr('本金', 'Principal')} v={`$${cost.notionalUsd.toFixed(2)}`} />
         {feeBps > 0 && (
-          <SumRow k={`手续费（${cost.rateLabel}）`} v={formatFeeAmount(cost.feeUsd)} />
+          <SumRow k={tr(`手续费（${cost.rateLabel}）`, `Fee (${cost.rateLabel})`)} v={formatFeeAmount(cost.feeUsd)} />
         )}
         <SumRow k={settle.label} v={formatMoney(settle.usd)} strong />
         {maxAmount != null && side === 'BUY' && (
-          <SumRow k="可用余额" v={`$${maxAmount.toFixed(2)}`} />
+          <SumRow k={tr('可用余额', 'Available')} v={`$${maxAmount.toFixed(2)}`} />
         )}
       </div>
 
@@ -390,7 +409,9 @@ export function OrderForm({
           'disabled:cursor-not-allowed disabled:bg-muted disabled:text-muted-foreground',
         )}
       >
-        {submitting ? '提交中…' : `${side === 'BUY' ? '买入' : '卖出'} ${outcomeName} · $${settle.usd.toFixed(2)}`}
+        {submitting
+          ? tr('提交中…', 'Submitting…')
+          : `${buy ? tr('买入', 'Buy') : tr('卖出', 'Sell')} ${outcomeName} · $${settle.usd.toFixed(2)}`}
       </button>
     </div>
   )

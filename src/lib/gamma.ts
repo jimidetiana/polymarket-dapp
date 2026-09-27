@@ -18,8 +18,11 @@
  */
 
 import { leagueCodeFromImage } from './dict'
+import { tr } from './i18n'
 
 const GAMMA_BASE = 'https://gamma-api.polymarket.com'
+
+const NOT_ARRAY = () => tr('Gamma 返回的赛事列表不是数组', 'Gamma returned a non-array event list')
 
 /**
  * 直接让 Gamma 按足球 tag 筛（`tag_slug=soccer`），不再拉整个体育大类。
@@ -141,13 +144,16 @@ async function gammaGet<T>(path: string, params: Record<string, GammaParam>): Pr
     res = await fetch(url)
   } catch (e) {
     // fetch 抛异常基本只有网络层问题（DNS / 连接被拒 / 被墙）
+    const why = e instanceof Error ? e.message : String(e)
     throw new GammaError(
-      `连不上 Polymarket（${e instanceof Error ? e.message : String(e)}）。` +
-        `请确认浏览器能打开 polymarket.com——某些网络需要代理或 VPN。`,
+      tr(
+        `连不上 Polymarket（${why}）。请确认浏览器能打开 polymarket.com——某些网络需要代理或 VPN。`,
+        `Can't reach Polymarket (${why}). Check that polymarket.com opens in this browser — some networks need a proxy or VPN.`,
+      ),
       true,
     )
   }
-  if (!res.ok) throw new GammaError(`Gamma 返回 HTTP ${res.status}`, false)
+  if (!res.ok) throw new GammaError(tr(`Gamma 返回 HTTP ${res.status}`, `Gamma returned HTTP ${res.status}`), false)
   return (await res.json()) as T
 }
 
@@ -215,10 +221,10 @@ export async function fetchSoccerEvents(): Promise<GammaEvent[]> {
   })
   const total = head.pagination?.totalResults
   if (typeof total !== 'number' || !Number.isFinite(total)) {
-    throw new GammaError('Gamma 没有返回赛事总数，无法确认能否拉全', false)
+    throw new GammaError(tr('Gamma 没有返回赛事总数，无法确认能否拉全', 'Gamma returned no event total; cannot tell if the list is complete'), false)
   }
   const pages = Math.ceil(total / PAGE_SIZE)
-  if (pages > MAX_PAGES) throw new GammaError(`足球赛事多达 ${total} 个，超出预期，先不拉`, false)
+  if (pages > MAX_PAGES) throw new GammaError(tr(`足球赛事多达 ${total} 个，超出预期，先不拉`, `${total} soccer events is more than expected; not fetching`), false)
 
   const batches = await Promise.all(
     Array.from({ length: pages }, (_, i) =>
@@ -228,7 +234,7 @@ export async function fetchSoccerEvents(): Promise<GammaEvent[]> {
   )
   const events: GammaEvent[] = []
   for (const b of batches) {
-    if (!Array.isArray(b)) throw new GammaError('Gamma 返回的赛事列表不是数组', false)
+    if (!Array.isArray(b)) throw new GammaError(NOT_ARRAY(), false)
     events.push(...b)
   }
   const soccer = events.filter(isSoccer)
@@ -404,7 +410,7 @@ export function mergeMarkets(events: readonly GammaEvent[]): GammaMarket[] {
 export async function fetchMatchMarkets(eventIds: readonly string[]): Promise<GammaMarket[]> {
   if (eventIds.length === 0) return []
   const events = await gammaGet<GammaEvent[]>('/events', { id: eventIds, limit: PAGE_SIZE })
-  if (!Array.isArray(events)) throw new GammaError('Gamma 返回的赛事列表不是数组', false)
+  if (!Array.isArray(events)) throw new GammaError(NOT_ARRAY(), false)
   if (events.length < eventIds.length) {
     const got = new Set(events.map((e) => String(e.id)))
     console.warn(`[gamma] 子赛事缺了 ${eventIds.filter((id) => !got.has(id)).join(', ')}，这几族盘口不在图上`)
@@ -431,7 +437,7 @@ export async function fetchMatchesByIds(eventIds: readonly string[]): Promise<So
     id: eventIds.slice(0, PAGE_SIZE),
     limit: PAGE_SIZE,
   })
-  if (!Array.isArray(events)) throw new GammaError('Gamma 返回的赛事列表不是数组', false)
+  if (!Array.isArray(events)) throw new GammaError(NOT_ARRAY(), false)
   return mergeIntoMatches(events.filter(isSoccer))
 }
 

@@ -34,42 +34,53 @@
  */
 import { useState } from 'react'
 import type { SoccerMatch } from '../lib/gamma'
-import { translateLeague, translateTeam } from '../lib/dict'
+import { displayLeague, displayTeam } from '../lib/dict'
+import { tr } from '../lib/i18n'
 import { cn, formatKickoff, formatVolume } from '../lib/utils'
 import {
   STATUS_CLASS,
-  STATUS_LABEL,
+  statusLabel,
   countStatuses,
-  filterMatches,
   matchStatus,
   searchMatches,
   sortForList,
-  type MatchFilter,
+  type MatchStatus,
 } from '../lib/match-list'
 import { matchHasPosition } from '../lib/positions'
 
 /**
- * 标签页。比 `MatchFilter` 多一个 `mine` —— 那个不是开赛状态，而是「这场跟我有关」，
- * 判据来自持仓（lib/positions.ts 的 matchHasPosition），所以不能并进 filterMatches
- * （那个函数只认状态，见 lib/match-list.ts）。多出来的那一个在组件里就地筛。
+ * 标签页。比开赛状态多一个 `mine` —— 那个不是开赛状态，而是「这场跟我有关」，
+ * 判据来自持仓（lib/positions.ts 的 matchHasPosition），所以不能跟状态混在
+ * 同一个判据里（状态只认 endDate，见 lib/match-list.ts）。多出来的那一个就地筛。
+ *
+ * ## 多选：怎么组合
+ *
+ * 标签是**可多选**的，一次能勾几个。组合规则分两层，因为两类条件的性质不同：
+ *   - 状态之间（进行中 / 即将开始 / 已结束）是**并集**：一场比赛只可能是其中一个
+ *     状态，AND 起来必空，所以勾多个 = 「是这几个状态之一」。
+ *   - 「我的」与状态之间是**交集**：勾了「我的 + 进行中」= 我有仓位、且正在进行。
+ *   - 「全部」是**清空**：点它把所有勾选去掉；一个都没勾时它自己是选中态。
  *
  * ⚠️ **「我的」只含持仓，不含挂单。** 挂单（未成交委托）公开接口拿不到：只有 CLOB 的
  * 鉴权接口有，读它得先让用户签一次名 —— 弹窗里那段「持仓中」正是为此做成按需加载的。
  * 想在列表上标挂单，就得先接受「打开列表要签一次名」，那是另一个取舍。
  */
-type Tab = MatchFilter | 'mine'
+type Tab = 'all' | 'mine' | MatchStatus
+
+/** 状态类标签，用来把勾选拆成「状态并集」那一层 */
+const STATUS_KEYS = ['live', 'not_started', 'ended'] as const
 
 /**
  * 筛选标签。原项目那份还有「关注」「重点」：前者要一份持久化的关注列表，
  * 后者是「进行中 + 即将开始」的合称 —— dapp 没有关注，两个都省掉，
  * 状态之间由「全部」兜住。
  */
-const TABS: Array<{ key: Tab; label: string }> = [
-  { key: 'all', label: '全部' },
-  { key: 'mine', label: '我的' },
-  { key: 'live', label: '进行中' },
-  { key: 'not_started', label: '即将开始' },
-  { key: 'ended', label: '已结束' },
+const TABS: Array<{ key: Tab; label: [string, string] }> = [
+  { key: 'all', label: ['全部', 'All'] },
+  { key: 'mine', label: ['我的', 'Mine'] },
+  { key: 'live', label: ['进行中', 'Live'] },
+  { key: 'not_started', label: ['即将开始', 'Upcoming'] },
+  { key: 'ended', label: ['已结束', 'Ended'] },
 ]
 
 /** 每页场数。凭手感定的：一页大致填满左栏、又不需要内层滚动。
@@ -94,7 +105,8 @@ export function MatchPicker({
   positionEventIds?: ReadonlySet<string>
 }) {
   const [q, setQ] = useState('')
-  const [filter, setFilter] = useState<Tab>('all')
+  // 多选：存一组勾中的标签。空集 = 没筛 = 「全部」。'all' 不入集，它是「清空」这个动作。
+  const [filters, setFilters] = useState<Set<Exclude<Tab, 'all'>>>(() => new Set())
   const [page, setPage] = useState(1)
 
   const empty = matches.length === 0
@@ -114,7 +126,16 @@ export function MatchPicker({
 
   // 展示顺序：没结束的按开赛时间升序在前，已结束的沉底（见 sortForList）。
   // matches 本身的顺序是重要性排序（子赛事多的在前），只留给「没有指定时的兜底」
-  const filtered = filter === 'mine' ? matches.filter(hasHolding) : filterMatches(matches, filter)
+  //
+  // 多选按「说明里那两层」拼：先按「我的」交集收窄，再按勾中的状态求并集。
+  // 一个状态都没勾就不按状态筛（等于全状态）；filters 空则整段都不动 = 全部。
+  const statusSel = STATUS_KEYS.filter((s) => filters.has(s))
+  let filtered = matches
+  if (filters.has('mine')) filtered = filtered.filter(hasHolding)
+  if (statusSel.length > 0) {
+    const wanted = new Set<MatchStatus>(statusSel)
+    filtered = filtered.filter((m) => wanted.has(matchStatus(m.endDate)))
+  }
   const visible = sortForList(searchMatches(filtered, q))
 
   // 页数至少 1：空列表也得是「第 1 / 1 页」，否则页码处会显示 0
@@ -137,20 +158,29 @@ export function MatchPicker({
           // 换了条件就回第一页：停在第 3 页看一批新结果，一上来就是空的
           setPage(1)
         }}
-        placeholder="搜队名 / 联赛（中英文都行）"
+        placeholder={tr('搜队名 / 联赛（中英文都行）', 'Search team / league (EN or 中文)')}
         className="w-full rounded-md border border-border bg-input px-2 py-1 text-xs text-foreground placeholder:text-muted-foreground"
       />
 
       <div className="flex flex-wrap gap-1">
         {TABS.map((t) => {
-          const active = filter === t.key
+          // 「全部」在没勾任何条件时点亮；其余各自看在不在集合里，可同时点亮多个
+          const active = t.key === 'all' ? filters.size === 0 : filters.has(t.key)
           const n = t.key === 'all' ? matches.length : t.key === 'mine' ? mineCount : counts[t.key]
           return (
             <button
               key={t.key}
               type="button"
               onClick={() => {
-                setFilter(t.key)
+                setFilters((prev) => {
+                  // 「全部」= 清空勾选；其余标签在集合里切换（勾/取消）
+                  if (t.key === 'all') return new Set()
+                  const next = new Set(prev)
+                  if (next.has(t.key)) next.delete(t.key)
+                  else next.add(t.key)
+                  return next
+                })
+                // 换了条件就回第一页：停在第 3 页看一批新结果，一上来就是空的
                 setPage(1)
               }}
               className={cn(
@@ -160,7 +190,7 @@ export function MatchPicker({
                   : 'border-border text-foreground hover:bg-muted',
               )}
             >
-              {t.label}（{n}）
+              {tr(...t.label)}{tr(`（${n}）`, ` (${n})`)}
             </button>
           )
         })}
@@ -170,7 +200,7 @@ export function MatchPicker({
       <div className="space-y-1.5">
         {rows.length === 0 ? (
           <p className="p-3 text-center text-xs text-muted-foreground">
-            {empty ? '时间窗内没有比赛' : '没有匹配的比赛'}
+            {empty ? tr('时间窗内没有比赛', 'No matches in the time window') : tr('没有匹配的比赛', 'No matching matches')}
           </p>
         ) : (
           rows.map((m) => (
@@ -194,7 +224,7 @@ export function MatchPicker({
             disabled={current <= 1}
             className="rounded-md border border-border px-2 py-1 text-[10px] text-foreground hover:bg-muted disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent"
           >
-            上一页
+            {tr('上一页', 'Prev')}
           </button>
           <span className="tnum text-[10px] text-muted-foreground">
             {current} / {pageCount}
@@ -205,7 +235,7 @@ export function MatchPicker({
             disabled={current >= pageCount}
             className="rounded-md border border-border px-2 py-1 text-[10px] text-foreground hover:bg-muted disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent"
           >
-            下一页
+            {tr('下一页', 'Next')}
           </button>
         </div>
       )}
@@ -234,9 +264,10 @@ function MatchRow({
   held: boolean
   onPick: () => void
 }) {
-  const homeZh = translateTeam(match.home)
-  const awayZh = translateTeam(match.away)
+  const homeZh = displayTeam(match.home)
+  const awayZh = displayTeam(match.away)
   // 至少有一条译名才显示英文副行；两条都没译时那一行只是把上面重复一遍
+  // （英文界面下 displayTeam 就是原名，副行自然不出现）
   const hasEn = homeZh !== match.home || awayZh !== match.away
   const status = matchStatus(match.endDate)
   const vol = match.volume
@@ -261,8 +292,8 @@ function MatchRow({
             </p>
           )}
           <p className="truncate text-[10px] text-muted-foreground">
-            {translateLeague(match.leagueCode) ?? '足球'} · {formatKickoff(match.endDate)}
-            {vol != null && ` · 成交 ${formatVolume(vol)}`}
+            {displayLeague(match.leagueCode) ?? tr('足球', 'Soccer')} · {formatKickoff(match.endDate)}
+            {vol != null && tr(` · 成交 ${formatVolume(vol)}`, ` · Vol ${formatVolume(vol)}`)}
           </p>
         </div>
         <div className="flex shrink-0 flex-col items-end gap-1">
@@ -272,16 +303,18 @@ function MatchRow({
               STATUS_CLASS[status],
             )}
           >
-            {STATUS_LABEL[status]}
+            {statusLabel(status)}
           </span>
           {/* 持仓徽标。用品牌色而不是语义色：这不是一个「好 / 坏」的状态，
               而是「这场跟我有关」—— 与选中态同一个强调色，一眼能跟状态徽标分开 */}
           {held && (
             <span className="rounded border border-primary/30 bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">
-              持仓
+              {tr('持仓', 'Held')}
             </span>
           )}
-          <span className="tnum text-[10px] text-muted-foreground">{match.eventIds.length} 个子赛事</span>
+          <span className="tnum text-[10px] text-muted-foreground">
+            {tr(`${match.eventIds.length} 个子赛事`, `${match.eventIds.length} sub-events`)}
+          </span>
         </div>
       </div>
     </button>

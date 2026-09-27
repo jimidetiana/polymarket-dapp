@@ -19,6 +19,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { PUSD_POLYGON } from './proxy-wallet'
 import { useProxyWallet } from './use-wallet'
 import { BUILDER_FEE_RATES, maxBpsOf } from './fee'
+import { tr, useLang } from './i18n'
 import {
   cancelOrderById,
   explainError,
@@ -237,13 +238,15 @@ export type ClobReadiness =
 function useSecureClient() {
   const { address, isConnected, chainId } = useAccount()
   const { data: walletClient } = useWalletClient()
+  // readiness.reason 是给人看的文案，切语言要重算
+  const lang = useLang()
 
   const readiness = useMemo<ClobReadiness>(() => {
-    if (!isConnected || !address) return { ready: false, reason: '未连接钱包' }
-    if (chainId !== 137) return { ready: false, reason: '钱包不在 Polygon 网络' }
-    if (!walletClient) return { ready: false, reason: '钱包客户端还没就绪，稍等一秒再试' }
+    if (!isConnected || !address) return { ready: false, reason: tr('未连接钱包', 'Wallet not connected') }
+    if (chainId !== 137) return { ready: false, reason: tr('钱包不在 Polygon 网络', 'Wallet is not on Polygon') }
+    if (!walletClient) return { ready: false, reason: tr('钱包客户端还没就绪，稍等一秒再试', 'Wallet client not ready yet — try again in a second') }
     return { ready: true }
-  }, [isConnected, address, chainId, walletClient])
+  }, [isConnected, address, chainId, walletClient, lang]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // get() 惰性建已认证客户端：首次会让用户签名（派生 L2 凭据；按需免 gas 部署
   // Deposit Wallet / 设授权），之后缓存在模块级 Map 里。

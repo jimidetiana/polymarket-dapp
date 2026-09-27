@@ -12,6 +12,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { useQueryClient } from '@tanstack/react-query'
 import { cn } from '../lib/utils'
+import { tr } from '../lib/i18n'
 import { OrderForm } from './order-form'
 import { OrderBook } from './order-book'
 import { DEFAULT_TICK, formatTickPrice, TICK_SIZES, toSteps, type TickSize } from '../lib/tick'
@@ -182,7 +183,7 @@ export function OrderDialog({
 
   const blockedReason = clob.readiness.ready
     ? phase !== 'idle'
-      ? '上一笔还在处理中…'
+      ? tr('上一笔还在处理中…', 'Previous order still processing…')
       : null
     : clob.readiness.reason
 
@@ -264,14 +265,14 @@ export function OrderDialog({
           {/* 头部 */}
           <div className="flex items-start justify-between gap-2 border-b border-border px-3 py-2.5">
             <div className="min-w-0">
-              <p className="truncate text-sm font-semibold text-foreground">下单 · {sideName}</p>
+              <p className="truncate text-sm font-semibold text-foreground">{tr('下单', 'Trade')} · {sideName}</p>
               <p className="truncate text-[10px] text-muted-foreground">{eventTitle}</p>
             </div>
             <button
               type="button"
               onClick={onClose}
               className="rounded-md p-1 text-muted-foreground hover:bg-muted"
-              aria-label="关闭"
+              aria-label={tr('关闭', 'Close')}
             >
               <svg viewBox="0 0 24 24" className="size-4" fill="none" stroke="currentColor" strokeWidth="2">
                 <path d="M18 6 6 18M6 6l12 12" />
@@ -283,7 +284,7 @@ export function OrderDialog({
             {/* 左：盘口信息 + 深度 */}
             <div className="space-y-3">
               <div className="rounded-lg border border-primary/30 bg-primary/5 p-3">
-                <p className="text-[10px] text-muted-foreground">已选盘口</p>
+                <p className="text-[10px] text-muted-foreground">{tr('已选盘口', 'Selected market')}</p>
                 <p className="text-sm font-medium text-foreground">{marketLabel}</p>
                 <p className="mt-0.5 line-clamp-2 text-[10px] leading-snug text-muted-foreground">
                   {marketQuestion}
@@ -293,7 +294,7 @@ export function OrderDialog({
                     这是对的，不是刷新错乱。 */}
                 {sides.length > 1 && (
                   <div className="mt-2.5">
-                    <p className="mb-1 text-[10px] text-muted-foreground">买哪一侧</p>
+                    <p className="mb-1 text-[10px] text-muted-foreground">{tr('买哪一侧', 'Side')}</p>
                     <div className="flex gap-1.5">
                       {sides.map((s) => {
                         const active = s.tokenId === tokenId
@@ -340,8 +341,8 @@ export function OrderDialog({
               */}
               <div className="rounded-lg border border-border bg-card">
                 <div className="flex items-center justify-between gap-2 border-b border-border px-2.5 py-2">
-                  <span className="text-xs font-medium text-foreground">我的订单</span>
-                  <span className="text-[10px] text-muted-foreground">本盘口</span>
+                  <span className="text-xs font-medium text-foreground">{tr('我的订单', 'My orders')}</span>
+                  <span className="text-[10px] text-muted-foreground">{tr('本盘口', 'This market')}</span>
                 </div>
 
                 {/* ── 持仓中（未成交委托）── */}
@@ -353,8 +354,8 @@ export function OrderDialog({
                     className="flex w-full items-center justify-between gap-2 px-2.5 py-2 text-left text-[11px] text-foreground hover:bg-muted/50 disabled:opacity-50"
                   >
                     <span className="font-medium">
-                      持仓中
-                      <span className="ml-1 text-muted-foreground">（挂单，未成交）</span>
+                      {tr('持仓中', 'Open orders')}
+                      <span className="ml-1 text-muted-foreground">{tr('（挂单，未成交）', '(unfilled)')}</span>
                       {mine && (
                         <span className="ml-1.5 rounded-full bg-primary/10 px-1.5 py-0.5 text-[10px] text-primary">
                           {mine.length}
@@ -362,13 +363,17 @@ export function OrderDialog({
                       )}
                     </span>
                     <span className="shrink-0 text-[10px] text-muted-foreground">
-                      {phase === 'listing' ? '读取中…' : mine ? '收起' : '点开（需签名一次）'}
+                      {phase === 'listing'
+                        ? tr('读取中…', 'Loading…')
+                        : mine
+                          ? tr('收起', 'Hide')
+                          : tr('点开（需签名一次）', 'Show (needs one signature)')}
                     </span>
                   </button>
 
                   {mine &&
                     (!mine.length ? (
-                      <p className="px-2.5 pb-2 text-[10px] text-muted-foreground">没有未成交的挂单</p>
+                      <p className="px-2.5 pb-2 text-[10px] text-muted-foreground">{tr('没有未成交的挂单', 'No open orders')}</p>
                     ) : (
                       <div className="max-h-40 divide-y divide-border overflow-y-auto border-t border-border">
                         {mine.map((o) => (
@@ -383,7 +388,7 @@ export function OrderDialog({
                                       : 'bg-error/10 text-error',
                                   )}
                                 >
-                                  {o.side === 'BUY' ? '买' : '卖'}
+                                  {o.side === 'BUY' ? tr('买', 'Buy') : tr('卖', 'Sell')}
                                 </span>
                                 <span className="font-mono tnum">
                                   {formatTickPrice(Number(o.price), tick)}
@@ -393,7 +398,7 @@ export function OrderDialog({
                                 </span>
                               </p>
                               <p className="truncate font-mono text-[10px] text-muted-foreground">
-                                {o.assetId === tokenId ? '本盘口' : `${o.assetId.slice(0, 10)}…`} ·{' '}
+                                {o.assetId === tokenId ? tr('本盘口', 'This market') : `${o.assetId.slice(0, 10)}…`} ·{' '}
                                 {o.orderType}
                               </p>
                             </div>
@@ -403,7 +408,7 @@ export function OrderDialog({
                               disabled={phase !== 'idle'}
                               className="shrink-0 rounded border border-error/30 bg-error/10 px-1.5 py-0.5 text-[10px] font-medium text-error hover:bg-error/20 disabled:opacity-50"
                             >
-                              撤单
+                              {tr('撤单', 'Cancel')}
                             </button>
                           </div>
                         ))}
@@ -419,19 +424,19 @@ export function OrderDialog({
                 */}
                 {orders.loading ? (
                   <p className="border-b border-border px-2.5 py-2 text-[10px] text-muted-foreground">
-                    读取中…
+                    {tr('读取中…', 'Loading…')}
                   </p>
                 ) : orders.error ? (
                   <p className="border-b border-border px-2.5 py-2 text-[10px] text-warning">
-                    读不到持仓与成交：{orders.error}
+                    {tr('读不到持仓与成交：', "Couldn't load positions and trades: ")}{orders.error}
                   </p>
                 ) : null}
 
                 {/* ── 持仓（已买入）── */}
                 <div className="border-b border-border px-2.5 py-2">
                   <p className="text-[11px] font-medium text-foreground">
-                    持仓
-                    <span className="ml-1 text-muted-foreground">（已买入）</span>
+                    {tr('持仓', 'Positions')}
+                    <span className="ml-1 text-muted-foreground">{tr('（已买入）', '(held)')}</span>
                     {held.length > 0 && (
                       <span className="ml-1.5 rounded-full bg-primary/10 px-1.5 py-0.5 text-[10px] text-primary">
                         {held.length}
@@ -440,7 +445,7 @@ export function OrderDialog({
                   </p>
                   {ordersReady &&
                     (!held.length ? (
-                      <p className="mt-1 text-[10px] text-muted-foreground">这张盘口没有持仓</p>
+                      <p className="mt-1 text-[10px] text-muted-foreground">{tr('这张盘口没有持仓', 'No positions in this market')}</p>
                     ) : (
                       <div className="mt-1.5 space-y-1.5">
                         {held.map((p) => (
@@ -461,8 +466,8 @@ export function OrderDialog({
                 */}
                 <div className="border-b border-border px-2.5 py-2">
                   <p className="text-[11px] font-medium text-foreground">
-                    成交
-                    <span className="ml-1 text-muted-foreground">（明细）</span>
+                    {tr('成交', 'Trades')}
+                    <span className="ml-1 text-muted-foreground">{tr('（明细）', '(fills)')}</span>
                     {orders.trades.length > 0 && (
                       <span className="ml-1.5 rounded-full bg-primary/10 px-1.5 py-0.5 text-[10px] text-primary">
                         {orders.trades.length}
@@ -471,7 +476,7 @@ export function OrderDialog({
                   </p>
                   {ordersReady &&
                     (!orders.trades.length ? (
-                      <p className="mt-1 text-[10px] text-muted-foreground">这张盘口没有成交记录</p>
+                      <p className="mt-1 text-[10px] text-muted-foreground">{tr('这张盘口没有成交记录', 'No trades in this market')}</p>
                     ) : (
                       <div className="mt-1.5 max-h-40 divide-y divide-border overflow-y-auto rounded border border-border">
                         {orders.trades.map((t) => (
@@ -488,7 +493,7 @@ export function OrderDialog({
                                     : 'bg-error/10 text-error',
                                 )}
                               >
-                                {t.side === 'BUY' ? '买' : '卖'}
+                                {t.side === 'BUY' ? tr('买', 'Buy') : tr('卖', 'Sell')}
                               </span>
                               <span className="text-muted-foreground">{t.outcome}</span>
                               <span className="ml-1.5 font-mono tnum">
@@ -507,8 +512,8 @@ export function OrderDialog({
                 {/* ── 完结（已结算 / 已平仓）── 只有仓位，成交明细在上面的「成交」里 */}
                 <div className="px-2.5 py-2">
                   <p className="text-[11px] font-medium text-foreground">
-                    完结
-                    <span className="ml-1 text-muted-foreground">（已结算 / 已平仓）</span>
+                    {tr('完结', 'Closed')}
+                    <span className="ml-1 text-muted-foreground">{tr('（已结算 / 已平仓）', '(settled / exited)')}</span>
                     {settled.length > 0 && (
                       <span className="ml-1.5 rounded-full bg-primary/10 px-1.5 py-0.5 text-[10px] text-primary">
                         {settled.length}
@@ -517,7 +522,7 @@ export function OrderDialog({
                   </p>
                   {ordersReady &&
                     (!settled.length ? (
-                      <p className="mt-1 text-[10px] text-muted-foreground">这张盘口没有已结算的仓位</p>
+                      <p className="mt-1 text-[10px] text-muted-foreground">{tr('这张盘口没有已结算的仓位', 'No closed positions in this market')}</p>
                     ) : (
                       <div className="mt-1.5 space-y-1.5">
                         {settled.map((p) => (
@@ -532,9 +537,9 @@ export function OrderDialog({
             {/* 右：余额 + 表单 / 确认 / 结果 */}
             <div className="space-y-3">
               <div className="flex items-center justify-between rounded-lg border border-border bg-card p-2.5">
-                <span className="text-xs text-muted-foreground">可用余额</span>
+                <span className="text-xs text-muted-foreground">{tr('可用余额', 'Available')}</span>
                 <span className="font-mono text-sm font-bold tnum text-foreground">
-                  {usdc.isLoading || proxy.isLoading ? '读取中…' : balance != null ? `$${balance.toFixed(2)}` : '—'}
+                  {usdc.isLoading || proxy.isLoading ? tr('读取中…', 'Loading…') : balance != null ? `$${balance.toFixed(2)}` : '—'}
                 </span>
               </div>
 
@@ -581,22 +586,22 @@ export function OrderDialog({
                 (outcome.ok ? (
                   <div className="rounded-md border border-success/30 bg-success/10 px-2.5 py-2 text-[11px] leading-snug text-success">
                     <p className="font-semibold">
-                      已提交 · {outcome.order.status}
-                      {outcome.order.status === 'matched' && '（已成交）'}
+                      {tr('已提交', 'Submitted')} · {outcome.order.status}
+                      {outcome.order.status === 'matched' && tr('（已成交）', ' (filled)')}
                     </p>
-                    <p className="mt-0.5 font-mono">订单号 {outcome.order.orderId}</p>
+                    <p className="mt-0.5 font-mono">{tr('订单号', 'Order ID')} {outcome.order.orderId}</p>
                     <p className="mt-0.5 font-mono">
-                      付出 {outcome.order.makingAmount} · 得到 {outcome.order.takingAmount}
+                      {tr('付出', 'Paid')} {outcome.order.makingAmount} · {tr('得到', 'Received')} {outcome.order.takingAmount}
                     </p>
                     {outcome.order.status !== 'matched' && (
                       <p className="mt-1 text-success/80">
-                        挂单中（未成交），可以在下面「我的挂单」里撤。
+                        {tr('挂单中（未成交），可以在下面「我的挂单」里撤。', 'Resting (unfilled) — you can cancel it under "Open orders".')}
                       </p>
                     )}
                   </div>
                 ) : (
                   <div className="rounded-md border border-error/30 bg-error/10 px-2.5 py-2 text-[11px] leading-snug text-error">
-                    <p className="font-semibold">交易所拒单</p>
+                    <p className="font-semibold">{tr('交易所拒单', 'Rejected by exchange')}</p>
                     <p className="mt-0.5 font-mono">{outcome.code}</p>
                     <p className="mt-0.5">{outcome.message}</p>
                   </div>
@@ -628,11 +633,11 @@ function PositionRow({ p, settled }: { p: PolyPosition; settled?: boolean }) {
         <span className="min-w-0 truncate text-[11px] text-foreground">
           {settled && (
             <span className="mr-1.5 rounded bg-muted px-1 py-0.5 text-[10px] text-muted-foreground">
-              {p.redeemable ? '已结算' : '已平仓'}
+              {p.redeemable ? tr('已结算', 'Settled') : tr('已平仓', 'Exited')}
             </span>
           )}
           <span className="font-medium">{p.outcome || '—'}</span>
-          <span className="ml-1.5 font-mono tnum text-muted-foreground">{p.size} 份</span>
+          <span className="ml-1.5 font-mono tnum text-muted-foreground">{p.size} {tr('份', 'shares')}</span>
         </span>
         <span
           className={cn(
@@ -644,8 +649,12 @@ function PositionRow({ p, settled }: { p: PolyPosition; settled?: boolean }) {
         </span>
       </div>
       <p className="mt-0.5 font-mono text-[10px] tnum text-muted-foreground">
-        均价 {p.avgPrice.toFixed(3)}
-        {!settled && ` · 现价 ${p.curPrice.toFixed(3)} · 市值 $${p.currentValue.toFixed(2)}`}
+        {tr('均价', 'Avg')} {p.avgPrice.toFixed(3)}
+        {!settled &&
+          tr(
+            ` · 现价 ${p.curPrice.toFixed(3)} · 市值 $${p.currentValue.toFixed(2)}`,
+            ` · Now ${p.curPrice.toFixed(3)} · Value $${p.currentValue.toFixed(2)}`,
+          )}
         {!settled && p.percentPnl !== 0 && ` · ${p.percentPnl > 0 ? '+' : '−'}${Math.abs(p.percentPnl).toFixed(1)}%`}
       </p>
     </div>

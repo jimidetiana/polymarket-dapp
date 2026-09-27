@@ -11,7 +11,8 @@
  * 大小写、多词），值得钉住。
  */
 import type { SoccerMatch } from './gamma'
-import { translateLeague, translateTeam } from './dict'
+import { leagueEn, translateLeague, translateTeam } from './dict'
+import { tr } from './i18n'
 
 /**
  * 开赛状态。
@@ -37,10 +38,14 @@ export function matchStatus(endDate: string | null, now: number = Date.now()): M
   return now < kickoff + LIVE_WINDOW_MS ? 'live' : 'ended'
 }
 
-export const STATUS_LABEL: Record<MatchStatus, string> = {
-  not_started: '未开始',
-  live: '进行中',
-  ended: '已结束',
+const STATUS_LABEL: Record<MatchStatus, [string, string]> = {
+  not_started: ['未开始', 'Upcoming'],
+  live: ['进行中', 'Live'],
+  ended: ['已结束', 'Ended'],
+}
+
+export function statusLabel(s: MatchStatus): string {
+  return tr(...STATUS_LABEL[s])
 }
 
 /** 筛选标签。`all` 不是状态，是「不筛」 */
@@ -69,6 +74,7 @@ export function matchHaystack(m: SoccerMatch): string {
     translateTeam(m.away),
     m.leagueCode ?? '',
     translateLeague(m.leagueCode) ?? '',
+    leagueEn(m.leagueCode) ?? '',
   ]
   return parts.join(' ').toLowerCase()
 }

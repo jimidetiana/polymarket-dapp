@@ -41,8 +41,9 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { cn } from '@/lib/utils'
 import { formatVolume } from '@/lib/utils'
 import { formatPrice, type PriceMode } from '@/lib/odds'
+import { tr, useLang } from '@/lib/i18n'
 import { PALETTES, DEFAULT_PALETTE, type TeamPaletteKey } from '@/lib/palette'
-import { positionKind, type PolyPosition } from '@/lib/positions'
+import { positionKind, slotPositionMark, type PositionIndex, type SlotPositionMark } from '@/lib/positions'
 import type { GraphGoalCounts, GraphNode, GraphSlot, MarketGraph } from '@/types/market-graph'
 import { BASE_R, layoutSlots } from '@/lib/layout'
 import {
@@ -130,12 +131,15 @@ interface Props {
   /** 主客队配色方案 */
   palette?: TeamPaletteKey
   /**
-   * tokenId → 该 token 的持仓。给节点画持仓角标。
+   * 当前账户的持仓索引。给节点画持仓角标。
    *
-   * 没连钱包、拿不到时传空表即可 —— 画布不区分「没有持仓」和「读不到持仓」，
+   * 没连钱包、拿不到时传空索引即可 —— 画布不区分「没有持仓」和「读不到持仓」，
    * 两者都表现为没有角标（见 lib/use-positions.ts）。
+   *
+   * 角标分两种（见 slotPositionMark）：命中槽位显示的那一侧是绿/灰角标；持在同一张盘
+   * 的**另一侧**（Under、No 这些模板里没有槽位的侧）借对面槽位标出来，用琥珀色区分。
    */
-  positionsByToken?: ReadonlyMap<string, PolyPosition>
+  positions?: PositionIndex
 }
 
 /**
@@ -179,10 +183,11 @@ export function MarketGraphCanvas({
   selectedKey,
   onSelect,
   onBuy,
-  positionsByToken,
+  positions,
   palette: paletteKey = DEFAULT_PALETTE,
 }: Props) {
   const palette = PALETTES[paletteKey]
+  useLang()
   const [hover, setHover] = useState<GraphSlot | null>(null)
 
   // 图例用的队名：有中文用中文，否则回退英文。类型保证是 string，可能为空串。
@@ -205,6 +210,15 @@ export function MarketGraphCanvas({
     for (const n of graph.nodes) m.set(n.id, n)
     return m
   }, [graph.nodes])
+
+  /**
+   * 图上所有已显示的 token。slotPositionMark 用它排除「另一侧其实也有槽位」的情况
+   * ——让球盘两侧各占一个槽位，各自标即可，不该在对面重复标一次。
+   */
+  const displayedTokens = useMemo(
+    () => new Set(slots.map((s) => s.tokenId).filter((t): t is string => !!t)),
+    [slots],
+  )
 
   const [wrapRef, size] = useElementSize<HTMLDivElement>()
 
@@ -416,22 +430,16 @@ export function MarketGraphCanvas({
             const delta = s.price != null && prev != null ? s.price - prev : null
 
             const hit = slotHit(s, goals)
-            // 持仓角标。按 tokenId 查 —— 槽位代表盘口的**某一侧**，而持仓也是按侧
-            // 记的（一张盘两侧可以各有仓位），所以只有同一侧才该标。
-            const pos = s.tokenId ? positionsByToken?.get(s.tokenId) : undefined
+            // 持仓角标。先按 tokenId 查这一侧；没有再看同盘另一侧（Under/No 这类模板里
+            // 没槽位的侧，借对面槽位标出来，见 slotPositionMark）。
+            const mark = positions ? slotPositionMark(s, positions, displayedTokens) : null
+            const pos = mark?.position
             const posKind = pos ? positionKind(pos) : null
             const teamSide = slotTeamSide(s)
-            const marketFill = s.quoted
-              ? teamSide === 'home'
-                ? palette.home
-                : teamSide === 'away'
-                  ? palette.away
-                  : palette.neutral
-              : teamSide === 'home'
-                ? palette.homeDim
-                : teamSide === 'away'
-                  ? palette.awayDim
-                  : palette.neutralDim
+            // 同一队只用一个颜色，不再按「实时 / 快照」分深浅：压暗色在图上读起来
+            // 像配色不统一。没有实时报价的节点 Ask/Bid 显示「—」，已经说明了这件事。
+            const marketFill =
+              teamSide === 'home' ? palette.home : teamSide === 'away' ? palette.away : palette.neutral
             const goalFill =
               s.goalsOf === 'home'
                 ? palette.home
@@ -443,9 +451,7 @@ export function MarketGraphCanvas({
               : isGoals
                 ? goalFill
                 : hit
-                  ? s.quoted
-                    ? palette.hit
-                    : palette.hitDim
+                  ? palette.hit
                   : marketFill
             // 选中描边用白而不是品牌色：节点现在有橙/靛/蓝多种填充，
             // 任何品牌色描边都会跟其中某一种撞色；白色是唯一能同时从这些颜色
@@ -494,12 +500,17 @@ export function MarketGraphCanvas({
                 {/*
                   持仓角标。
                   ## 为什么是角标，不是描边或换色
-                  这个节点上颜色和描边都已经占满了：填充编「主/客/中性 × 报价/快照」，
+                  这个节点上颜色和描边都已经占满了：填充编「主/客/中性」，
                   变绿编「已打出」，白色描边编「选中」。再叠一层只会跟其中某一个打架 ——
                   尤其描边，选中态那圈白会把它盖掉，于是「选中的那个」永远看不出有没有持仓。
                   所以另开一个位置：右上角 45° 方向，是圆周上唯一没被文字占的地方
                   （y=-46 是「已打出」，y=-18 是标签，16..38 是品字价格，62 是涨跌箭头）。
                   在 scale(nodeScale) 组内，跟着节点一起缩，不必写第二份小屏尺寸。
+
+                  ## 颜色编「哪一侧」
+                  绿/灰 = 持在本槽显示的这一侧（绿=持仓中、灰=已完结）；琥珀 = 持在同一张盘
+                  的另一侧（那一侧图上没有自己的槽位，见 slotPositionMark）。字仍是 持/结，
+                  开平/完结靠字区分，颜色专门让出来编「侧」。
                 */}
                 {pos && (
                   <g>
@@ -513,7 +524,13 @@ export function MarketGraphCanvas({
                       cx={62}
                       cy={-62}
                       r={20}
-                      fill={posKind === 'open' ? 'var(--pm-state-success)' : 'var(--pm-neutral-500)'}
+                      fill={
+                        mark && !mark.ownSide
+                          ? 'var(--pm-state-warning)'
+                          : posKind === 'open'
+                            ? 'var(--pm-state-success)'
+                            : 'var(--pm-neutral-500)'
+                      }
                       stroke="#ffffff"
                       strokeWidth={3}
                     />
@@ -524,7 +541,7 @@ export function MarketGraphCanvas({
                       fill="#ffffff"
                       style={{ fontSize: 19, fontWeight: 700 }}
                     >
-                      {posKind === 'open' ? '持' : '结'}
+                      {posKind === 'open' ? tr('持', 'H') : tr('结', 'C')}
                     </text>
                   </g>
                 )}
@@ -538,7 +555,7 @@ export function MarketGraphCanvas({
                     fill="#ffffff"
                     style={{ fontSize: 18, fontWeight: 700 }}
                   >
-                    ✓ 已打出
+                    {tr('✓ 已打出', '✓ Hit')}
                   </text>
                 )}
 
@@ -563,7 +580,7 @@ export function MarketGraphCanvas({
                     className="font-mono"
                     style={{ fontSize: 40, fontWeight: 700 }}
                   >
-                    {s.goals != null ? `${s.goals} 球` : '—'}
+                    {s.goals != null ? tr(`${s.goals} 球`, `${s.goals}`) : '—'}
                   </text>
                 ) : empty ? (
                   <text
@@ -573,7 +590,7 @@ export function MarketGraphCanvas({
                     fill="var(--pm-neutral-500)"
                     style={{ fontSize: 24, fontWeight: 600 }}
                   >
-                    无此盘
+                    {tr('无此盘', 'No market')}
                   </text>
                 ) : (
                   <>
@@ -605,7 +622,7 @@ export function MarketGraphCanvas({
                       style={{ fontSize: 15, fontWeight: 600 }}
                       opacity={0.8}
                     >
-                      卖
+                      {tr('卖', 'Ask')}
                     </text>
                     <text
                       x={-27}
@@ -626,7 +643,7 @@ export function MarketGraphCanvas({
                       style={{ fontSize: 15, fontWeight: 600 }}
                       opacity={0.8}
                     >
-                      买
+                      {tr('买', 'Bid')}
                     </text>
                     <text
                       x={27}
@@ -663,15 +680,14 @@ export function MarketGraphCanvas({
 
       {/*
         主客队配色图例：左上角常驻，把节点的暖/冷填充色对应到具体球队名，
-        看第一眼就知道「哪种颜色是哪队」。用主色（palette.home/away，即实时报价
-        节点的饱和色），不列快照压暗色与中性色 —— 那几档是「报价新旧/中性盘」的
-        编码，不对应球队。z 比悬浮详情（z-50）低：hover 某节点时详情盖在它上面
+        看第一眼就知道「哪种颜色是哪队」。不列中性色 —— 它不对应球队。
+        z 比悬浮详情（z-50）低：hover 某节点时详情盖在它上面
         （两者都落在左上角），不 hover 时图例常驻。
       */}
       {(homeTeam || awayTeam) && (
         <div className="pointer-events-none absolute left-3 top-3 z-30 flex flex-col gap-1.5 rounded-lg border border-border bg-popover/90 px-2.5 py-2 shadow-sm backdrop-blur-sm">
-          {homeTeam && <TeamLegendRow color={palette.home} role="主队" name={homeTeam} />}
-          {awayTeam && <TeamLegendRow color={palette.away} role="客队" name={awayTeam} />}
+          {homeTeam && <TeamLegendRow color={palette.home} role={tr('主队', 'Home')} name={homeTeam} />}
+          {awayTeam && <TeamLegendRow color={palette.away} role={tr('客队', 'Away')} name={awayTeam} />}
         </div>
       )}
 
@@ -682,7 +698,7 @@ export function MarketGraphCanvas({
       <div className="pointer-events-auto absolute bottom-3 right-3 z-40 flex flex-col gap-1">
         <button
           type="button"
-          aria-label="放大"
+          aria-label={tr('放大', 'Zoom in')}
           onClick={() => zoomAtCenter(BUTTON_STEP)}
           className="h-8 w-8 rounded-md border border-border bg-popover/90 text-sm text-foreground/80 hover:bg-muted"
         >
@@ -690,7 +706,7 @@ export function MarketGraphCanvas({
         </button>
         <button
           type="button"
-          aria-label="缩小"
+          aria-label={tr('缩小', 'Zoom out')}
           onClick={() => zoomAtCenter(1 / BUTTON_STEP)}
           className="h-8 w-8 rounded-md border border-border bg-popover/90 text-sm text-foreground/80 hover:bg-muted"
         >
@@ -699,11 +715,11 @@ export function MarketGraphCanvas({
         {zoomed && (
           <button
             type="button"
-            aria-label="复位"
+            aria-label={tr('复位', 'Reset')}
             onClick={() => setView(IDENTITY)}
             className="h-8 w-8 rounded-md border border-primary/60 bg-popover/90 text-[10px] text-primary hover:bg-muted"
           >
-            复位
+            {tr('复位', 'Reset')}
           </button>
         )}
       </div>
@@ -714,19 +730,20 @@ export function MarketGraphCanvas({
           node={hover.nodeId ? nodeById.get(hover.nodeId) : undefined}
           hit={slotHit(hover, goals)}
           priceMode={priceMode}
-          position={hover.tokenId ? positionsByToken?.get(hover.tokenId) : undefined}
+          positionMark={positions ? slotPositionMark(hover, positions, displayedTokens) : null}
         />
       )}
     </div>
   )
 }
 
-const DIR_TEXT: Record<string, string> = {
-  up: '推高',
-  down: '压低',
-  kill: '直接判死',
-  flat: '几乎不动',
+const DIR_TEXT: Record<string, [string, string]> = {
+  up: ['推高', 'pushes it up'],
+  down: ['压低', 'pushes it down'],
+  kill: ['直接判死', 'kills it'],
+  flat: ['几乎不动', 'barely moves it'],
 }
+const dirText = (d: string) => (DIR_TEXT[d] ? tr(...DIR_TEXT[d]) : d)
 
 /** 左上角配色图例的一行：色块 + 主/客 + 队名。 */
 function TeamLegendRow({ color, role, name }: { color: string; role: string; name: string }) {
@@ -748,58 +765,80 @@ function SlotTooltip({
   node,
   hit,
   priceMode,
-  position,
+  positionMark,
 }: {
   slot: GraphSlot
   node?: GraphNode
   /** 该线是否已打出。null = 比分未知或非进球盘 */
   hit: boolean | null
   priceMode: PriceMode
-  /** 这一侧的持仓。undefined = 没有持仓，或读不到 */
-  position?: PolyPosition
+  /** 这个槽位关联到的持仓。null = 没有持仓，或读不到 */
+  positionMark?: SlotPositionMark | null
 }) {
+  const position = positionMark?.position
+  // 另一侧持仓：标签写的是这一侧（如 Over），但用户持有的是对面（如 Under）——
+  // 不点破的话会以为标反了。见 slotPositionMark。
+  const otherSide = positionMark != null && !positionMark.ownSide
   return (
     <div className="pointer-events-none absolute left-3 top-3 z-50 w-80 rounded-lg border border-border bg-popover p-3 shadow-lg">
       <p className="text-xs font-semibold text-foreground">{slot.label}</p>
       {slot.kind === 'market' && slot.tokenId && (
-        <p className="mt-0.5 text-[10px] text-primary">点击直接下单</p>
+        <p className="mt-0.5 text-[10px] text-primary">{tr('点击直接下单', 'Click to trade')}</p>
       )}
 
       {hit != null && slot.hitNeed != null && (
         <p className={cn('mt-1 text-[10px]', hit ? 'text-success' : 'text-muted-foreground')}>
           {hit
-            ? `已打出（需 ${slot.hitNeed} 球，推断已达）`
-            : `未打出（需 ${slot.hitNeed} 球）`}
+            ? tr(`已打出（需 ${slot.hitNeed} 球，推断已达）`, `Hit (needs ${slot.hitNeed} goals, inferred reached)`)
+            : tr(`未打出（需 ${slot.hitNeed} 球）`, `Not hit (needs ${slot.hitNeed} goals)`)}
         </p>
       )}
 
       {/* 持仓详情。角标只说明「有仓」，具体多少、赚赔多少放在这里 ——
           节点里塞不下四个数字，而这四个数字正是「我该不该动它」的判据 */}
       {position && (
-        <div className="mt-2 rounded border border-primary/30 bg-primary/5 p-2">
+        <div
+          className={cn(
+            'mt-2 rounded border p-2',
+            otherSide ? 'border-warning/40 bg-warning/5' : 'border-primary/30 bg-primary/5',
+          )}
+        >
+          {otherSide && (
+            <p className="mb-1 text-[10px] leading-snug text-warning">
+              {tr(
+                `反向持仓：你持有的是本盘另一侧「${position.outcome}」，图上没有它的单独槽位，借这里标出。`,
+                `Opposite side: you hold "${position.outcome}" of this market, which has no slot of its own on the graph, so it's marked here.`,
+              )}
+            </p>
+          )}
           <div className="flex items-baseline justify-between gap-2">
-            <span className="text-[10px] font-semibold text-primary">
-              {positionKind(position) === 'open' ? '持仓中' : '已完结'} · {position.outcome}
+            <span
+              className={cn(
+                'text-[10px] font-semibold',
+                otherSide ? 'text-warning' : 'text-primary',
+              )}
+            >
+              {positionKind(position) === 'open' ? tr('持仓中', 'Open') : tr('已完结', 'Closed')} · {position.outcome}
             </span>
             <span className="font-mono tnum text-[10px] text-foreground">
-              {position.size.toFixed(2)} 份
+              {position.size.toFixed(2)} {tr('份', 'shares')}
             </span>
           </div>
           <div className="mt-1 space-y-0.5 text-[10px]">
             <div className="flex items-baseline justify-between gap-2">
-              <span className="text-muted-foreground">均价 / 现价</span>
+              <span className="text-muted-foreground">{tr('均价 / 现价', 'Avg / current')}</span>
               <span className="font-mono tnum text-foreground">
                 {position.avgPrice.toFixed(3)} / {position.curPrice.toFixed(3)}
               </span>
             </div>
             <div className="flex items-baseline justify-between gap-2">
-              <span className="text-muted-foreground">市值</span>
+              <span className="text-muted-foreground">{tr('市值', 'Value')}</span>
               <span className="font-mono tnum text-foreground">
                 ${position.currentValue.toFixed(2)}
               </span>
             </div>
             <div className="flex items-baseline justify-between gap-2">
-              <span className="text-muted-foreground">浮动盈亏</span>
+              <span className="text-muted-foreground">{tr('浮动盈亏', 'Unrealized P&L')}</span>
               <span
                 className={cn(
                   'font-mono tnum',
@@ -810,9 +849,9 @@ function SlotTooltip({
                       : 'text-foreground',
                 )}
               >
-                {position.cashPnl >= 0 ? '+' : '−'}${Math.abs(position.cashPnl).toFixed(2)}（
+                {position.cashPnl >= 0 ? '+' : '−'}${Math.abs(position.cashPnl).toFixed(2)}{tr('（', ' (')}
                 {position.percentPnl >= 0 ? '+' : '−'}
-                {Math.abs(position.percentPnl).toFixed(1)}%）
+                {Math.abs(position.percentPnl).toFixed(1)}%{tr('）', ')')}
               </span>
             </div>
           </div>
@@ -821,11 +860,13 @@ function SlotTooltip({
 
       {slot.kind === 'goals' ? (
         <p className="mt-1 text-[10px] leading-snug text-muted-foreground">
-          无对应盘口。进球数由大小球梯子反推：某条线的 Over 买价钉在 0.99
-          就说明该线已打出。推不出来时显示「—」，不猜。
+          {tr(
+            '无对应盘口。进球数由大小球梯子反推：某条线的 Over 买价钉在 0.99 就说明该线已打出。推不出来时显示「—」，不猜。',
+            'No market for this node. Goals are inferred from the O/U ladder: an Over bid pinned at 0.99 means that line has been hit. Shows "—" when it can\'t be inferred.',
+          )}
         </p>
       ) : !node ? (
-        <p className="mt-1 text-[10px] text-muted-foreground">这场比赛没有挂这条线。</p>
+        <p className="mt-1 text-[10px] text-muted-foreground">{tr('这场比赛没有挂这条线。', 'This match has no market for this line.')}</p>
       ) : (
         <>
           <p className="mt-0.5 text-[10px] leading-snug text-muted-foreground">
@@ -841,17 +882,17 @@ function SlotTooltip({
                   )}
                 >
                   {sd.name}
-                  {sd.name === slot.sideName && ' ·本节点'}
+                  {sd.name === slot.sideName && tr(' ·本节点', ' · this node')}
                 </span>
                 {/* 顺序与节点上一致：卖 / 买 */}
                 <span className="shrink-0 font-mono text-foreground">
                   {sd.bid != null || sd.ask != null ? (
                     <>
-                      卖 {formatPrice(sd.ask, priceMode)} / 买 {formatPrice(sd.bid, priceMode)}
+                      {tr('卖', 'Ask')} {formatPrice(sd.ask, priceMode)} / {tr('买', 'Bid')} {formatPrice(sd.bid, priceMode)}
                     </>
                   ) : sd.price != null ? (
                     <span className="text-muted-foreground">
-                      {formatPrice(sd.price, priceMode)} 快照
+                      {formatPrice(sd.price, priceMode)} {tr('快照', 'snapshot')}
                     </span>
                   ) : (
                     '—'
@@ -862,23 +903,25 @@ function SlotTooltip({
           </div>
           <div className="mt-2 border-t border-border pt-2 text-[10px] text-muted-foreground">
             <p>
-              进球影响：主队进球{DIR_TEXT[node.impact.homeGoal]}，客队进球
-              {DIR_TEXT[node.impact.awayGoal]}
+              {tr(
+                `进球影响：主队进球${dirText(node.impact.homeGoal)}，客队进球${dirText(node.impact.awayGoal)}`,
+                `Goal impact: a home goal ${dirText(node.impact.homeGoal)}, an away goal ${dirText(node.impact.awayGoal)}`,
+              )}
             </p>
             {node.impact.modelled ? (
               <p>
-                幅度{' '}
+                {tr('幅度', 'Magnitude')}{' '}
                 <span className="font-mono text-foreground">
                   {node.impact.magnitude.toFixed(3)}
                 </span>
               </p>
             ) : (
-              <p className="text-warning">幅度未建模</p>
+              <p className="text-warning">{tr('幅度未建模', 'Magnitude not modelled')}</p>
             )}
             <p>
-              成交 {formatVolume(node.volume)} · 挂单 {formatVolume(node.liquidity)}
+              {tr('成交', 'Volume')} {formatVolume(node.volume)} · {tr('挂单', 'Liquidity')} {formatVolume(node.liquidity)}
             </p>
-            {!slot.quoted && <p className="text-warning">仅快照价，非实时盘口</p>}
+            {!slot.quoted && <p className="text-warning">{tr('仅快照价，非实时盘口', 'Snapshot price only, not a live book')}</p>}
           </div>
         </>
       )}

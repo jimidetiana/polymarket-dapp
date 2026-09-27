@@ -32,6 +32,7 @@ import type {
   Period,
   Subject,
 } from './types.js'
+import { getLang, tr } from '../lib/i18n'
 
 function escapeRe(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
@@ -107,23 +108,26 @@ const GOAL_SENSITIVE_METRICS = new Set<Metric>([
 ])
 
 function teamName(input: ParseInput, side: 'home' | 'away'): string {
-  if (side === 'home') return input.homeTeamZh || input.homeTeamEn || '主队'
-  return input.awayTeamZh || input.awayTeamEn || '客队'
+  if (side === 'home') return input.homeTeamZh || input.homeTeamEn || tr('主队', 'Home')
+  return input.awayTeamZh || input.awayTeamEn || tr('客队', 'Away')
 }
 
 const PERIOD_LABEL: Record<Period, string> = { ft: '全场', ht: '半场', '2h': '下半场' }
+/** 英文带尾随空格：中文标签直接拼接，英文要隔开 */
+const PERIOD_LABEL_EN: Record<Period, string> = { ft: '', ht: '1H ', '2h': '2H ' }
 
 /** 组装节点上的短标签。长问句在图上放不下，节点只放这一段 */
 function labelOf(
   input: ParseInput,
   d: Omit<MarketDescriptor, 'label' | 'goalSensitive'>,
 ): string {
-  const per = d.period === 'ft' ? '' : PERIOD_LABEL[d.period]
   const who =
     d.subject === 'home' ? teamName(input, 'home')
     : d.subject === 'away' ? teamName(input, 'away')
     : ''
+  if (getLang() === 'en') return labelOfEn(d, who)
 
+  const per = d.period === 'ft' ? '' : PERIOD_LABEL[d.period]
   switch (d.family) {
     case 'ou': {
       const what = d.metric === 'corners' ? '角球' : '球'
@@ -152,6 +156,38 @@ function labelOf(
       return '首个角球'
     default:
       return '其他'
+  }
+}
+
+function labelOfEn(d: Omit<MarketDescriptor, 'label' | 'goalSensitive'>, who: string): string {
+  const per = PERIOD_LABEL_EN[d.period]
+  const line = d.line ?? '?'
+  const scope = who ? `${who} ` : ''
+  switch (d.family) {
+    case 'ou':
+      return `${per}${scope}O/U ${line}${d.metric === 'corners' ? ' corners' : ''}`
+    case 'spread':
+      return `${per}${scope}${d.line != null && d.line > 0 ? '+' : ''}${line}`
+    case 'moneyline':
+      return d.role === 'draw' ? `${per}Draw` : `${per}${who} win`
+    case 'btts':
+      return `${per}BTTS`
+    case 'exact':
+      return d.score ? `${per}${d.score.home}-${d.score.away}` : `${per}Other score`
+    case 'first_goal':
+      return who ? `${per}${who} first goal` : `${per}No first goal`
+    case 'scorer':
+      return `${d.player ?? 'Player'} to score`
+    case 'advance':
+      return 'To advance'
+    case 'penalty':
+      return 'Penalty shootout'
+    case 'odd_even':
+      return 'Corners odd/even'
+    case 'first_corner':
+      return 'First corner'
+    default:
+      return 'Other'
   }
 }
 

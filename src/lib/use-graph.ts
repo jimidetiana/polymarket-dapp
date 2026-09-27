@@ -24,7 +24,8 @@ import {
 import { applyLivePrices, buildMarketGraph, type GraphEventInput } from '../graph/graph'
 import { resolveTemplate, TEMPLATE_EDGES } from '../graph/template'
 import { inferGoalCounts, matchMinute, type GoalCounts } from '../graph/goals'
-import { translateLeague, translateQuestion, translateTeam } from './dict'
+import { displayLeague, translateQuestion, translateTeam } from './dict'
+import { tr, useLang } from './i18n'
 import { createClobWs, type ClobWs, type ConnState } from './clob-ws'
 import { toLiveQuotes, type Quote } from './book'
 import { DEFAULT_TICK, type TickSize } from './tick'
@@ -62,7 +63,7 @@ export function useSoccerMatches(): MatchListState {
   let error: string | null = null
   if (err) error = err instanceof Error ? err.message : String(err)
   // 接口通但一场都没有：多半是时间窗内确实没有比赛，不是故障
-  else if (!loading && q.isSuccess && matches.length === 0) error = '时间窗内没有进行中的足球比赛'
+  else if (!loading && q.isSuccess && matches.length === 0) error = tr('时间窗内没有进行中的足球比赛', 'No soccer matches in the current time window')
 
   return {
     matches,
@@ -157,6 +158,8 @@ export type GraphState = {
  */
 export function useMarketGraph(match: SoccerMatch | null): GraphState {
   const prevRef = useRef<Record<string, number>>({})
+  // 节点标签、标题、问句都在 baseGraph 里生成，切语言要重建它
+  const lang = useLang()
 
   const marketsQ = useQuery({
     queryKey: ['match-markets', match?.id ?? null],
@@ -171,20 +174,22 @@ export function useMarketGraph(match: SoccerMatch | null): GraphState {
     // 队名中文化在这里注入，而不是在 gamma.ts 里改 match.home/away：
     // 那两个字段要保持英文原名 —— 让球方向判断、盘口问句替换、词典查表
     // 都以英文名为键，翻过就对不上了。
+    const en = lang === 'en'
     const homeZh = translateTeam(match.home)
     const awayZh = translateTeam(match.away)
     const event: GraphEventInput = {
       id: match.id,
       titleEn: match.title,
-      titleZh: `${homeZh} vs ${awayZh}`,
+      // 英文界面不传任何 zh 字段 —— parse.ts / graph.ts 的 `zh || en` 回落自然落到英文
+      titleZh: en ? null : `${homeZh} vs ${awayZh}`,
       homeTeamEn: match.home,
       awayTeamEn: match.away,
       // translateTeam 查不到会原样返回英文，此时不传 zh —— parse.ts 里
       // `homeTeamZh || homeTeamEn` 的回落逻辑本来就对，传个等于英文的值
       // 只会让「有没有译名」这件事看不出来。
-      homeTeamZh: homeZh === match.home ? null : homeZh,
-      awayTeamZh: awayZh === match.away ? null : awayZh,
-      league: translateLeague(match.leagueCode),
+      homeTeamZh: en || homeZh === match.home ? null : homeZh,
+      awayTeamZh: en || awayZh === match.away ? null : awayZh,
+      league: displayLeague(match.leagueCode),
       endTime: match.endDate,
     }
     // 盘口问句也过一遍翻译：toGraphMarketInput 里 questionZh 写死 null，
@@ -192,6 +197,7 @@ export function useMarketGraph(match: SoccerMatch | null): GraphState {
     // 翻不动（译名缺失 + 术语没命中）就留 null，让 tooltip 回落英文原句。
     const inputs = markets.map((m) => {
       const base = toGraphMarketInput(m)
+      if (en) return base
       const zh = translateQuestion(base.questionEn, match.home, match.away)
       return { ...base, questionZh: zh && zh !== base.questionEn ? zh : null }
     })
@@ -201,7 +207,7 @@ export function useMarketGraph(match: SoccerMatch | null): GraphState {
     return buildMarketGraph(event, inputs, {
       state: { homeGoals: 0, awayGoals: 0, minute },
     })
-  }, [match, markets])
+  }, [match, markets, lang])
 
   /**
    * 要订阅的 token 列表。
@@ -209,15 +215,19 @@ export function useMarketGraph(match: SoccerMatch | null): GraphState {
    * 从节点的每一侧收集，而不是从盘口列表 —— 一个盘口有两侧（Yes/No、
    * Over/Under），CLOB 是**按 token 订阅**的，两侧各有自己的 tokenId。
    * 只订一侧会让另一侧永远停在快照价。
+   *
+   * 先拼成字符串再拆：切语言会重建 baseGraph，但 token 集合没变 —— 用数组引用当
+   * 依赖的话，下面那个 effect 会清空报价、重设订阅，图退回快照价。字符串相等就不动。
    */
-  const tokens = useMemo(() => {
-    if (!baseGraph) return [] as string[]
+  const tokenKey = useMemo(() => {
+    if (!baseGraph) return ''
     const set = new Set<string>()
     for (const n of baseGraph.nodes) {
       for (const s of n.sides) if (s.tokenId) set.add(s.tokenId)
     }
-    return [...set]
+    return [...set].join(',')
   }, [baseGraph])
+  const tokens = useMemo(() => (tokenKey ? tokenKey.split(',') : []), [tokenKey])
 
   const [book, setBook] = useState<ReadonlyMap<string, Quote>>(new Map())
   const [wsState, setWsState] = useState<ConnState>('idle')

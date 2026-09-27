@@ -27,6 +27,7 @@ import { useEffect } from 'react'
 import { createPortal } from 'react-dom'
 import { useWalletBalances } from '../lib/use-wallet'
 import { useApprovalState, useSetupApprovals } from '../lib/use-clob'
+import { tr } from '../lib/i18n'
 
 interface Props {
   onClose: () => void
@@ -66,16 +67,16 @@ export function ApprovalsDialog({ onClose }: Props) {
         <div className="w-full max-w-md rounded-xl border border-border bg-card shadow-2xl">
           <div className="flex items-start justify-between gap-2 border-b border-border px-3 py-2.5">
             <div className="min-w-0">
-              <p className="truncate text-sm font-semibold text-foreground">交易授权</p>
+              <p className="truncate text-sm font-semibold text-foreground">{tr('交易授权', 'Trading approvals')}</p>
               <p className="truncate text-[10px] text-muted-foreground">
-                交易所要能动你的 pUSD 和条件代币，才接得了单
+                {tr('交易所要能动你的 pUSD 和条件代币，才接得了单', 'The exchange needs access to your pUSD and outcome tokens to fill orders')}
               </p>
             </div>
             <button
               type="button"
               onClick={onClose}
               className="rounded-md p-1 text-muted-foreground hover:bg-muted"
-              aria-label="关闭"
+              aria-label={tr('关闭', 'Close')}
             >
               <svg viewBox="0 0 24 24" className="size-4" fill="none" stroke="currentColor" strokeWidth="2">
                 <path d="M18 6 6 18M6 6l12 12" />
@@ -85,17 +86,17 @@ export function ApprovalsDialog({ onClose }: Props) {
 
           <div className="space-y-2.5 p-3">
             <div className="flex items-center justify-between gap-2 rounded-lg border border-border bg-background p-2.5">
-              <span className="text-xs text-muted-foreground">当前状态</span>
+              <span className="text-xs text-muted-foreground">{tr('当前状态', 'Status')}</span>
               <span className="shrink-0">
                 {state.isLoading ? (
-                  <span className="text-[11px] text-muted-foreground">读取中…</span>
+                  <span className="text-[11px] text-muted-foreground">{tr('读取中…', 'Loading…')}</span>
                 ) : approved ? (
                   <span className="rounded-full bg-success/10 px-2 py-0.5 text-[11px] font-medium text-success">
-                    已授权
+                    {tr('已授权', 'Approved')}
                   </span>
                 ) : state.state ? (
                   <span className="rounded-full bg-warning/10 px-2 py-0.5 text-[11px] font-medium text-warning">
-                    缺 {state.state.missingCount} 项
+                    {tr(`缺 ${state.state.missingCount} 项`, `${state.state.missingCount} missing`)}
                   </span>
                 ) : (
                   <span className="text-[11px] text-muted-foreground">—</span>
@@ -110,15 +111,16 @@ export function ApprovalsDialog({ onClose }: Props) {
                 onClick={() => void setup.run()}
                 className="w-full rounded-md bg-primary px-3 py-2 text-sm font-semibold text-primary-foreground transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:bg-muted disabled:text-muted-foreground"
               >
-                {running ? '授权中…' : '一键授权（免 gas）'}
+                {running ? tr('授权中…', 'Approving…') : tr('一键授权（免 gas）', 'Approve all (gasless)')}
               </button>
             )}
 
             {!approved && setup.readiness.ready && (
               <p className="text-[10px] leading-snug text-muted-foreground">
-                会先让你在钱包里签一次名，用来派生 API 凭据 ——
-                <span className="text-foreground">不上链、不花 gas</span>。之后同一会话不再问。
-                授权本身由 Polymarket 代发，同样不需要 gas。
+                {tr(
+                  '会先让你在钱包里签一次名，用来派生 API 凭据 —— 不上链、不花 gas。之后同一会话不再问。授权本身由 Polymarket 代发，同样不需要 gas。',
+                  "You'll sign once in your wallet to derive API credentials — off-chain, no gas. You won't be asked again this session. The approvals themselves are relayed by Polymarket, also gasless.",
+                )}
               </p>
             )}
 
@@ -127,14 +129,17 @@ export function ApprovalsDialog({ onClose }: Props) {
             )}
 
             {state.error && (
-              <p className="text-[10px] leading-snug text-warning">读取授权状态失败：{state.error}</p>
+              <p className="text-[10px] leading-snug text-warning">{tr('读取授权状态失败：', 'Failed to read approval status: ')}{state.error}</p>
             )}
 
             {setup.error && <p className="text-[10px] leading-snug text-error">{setup.error}</p>}
 
             {approved && (
               <p className="text-[10px] leading-snug text-muted-foreground">
-                已经授权过了，不用再点。换钱包或换账户钱包后需要重新授权一次。
+                {tr(
+                  '已经授权过了，不用再点。换钱包或换账户钱包后需要重新授权一次。',
+                  'Already approved — nothing to do. Switching wallets or accounts requires approving again.',
+                )}
               </p>
             )}
           </div>

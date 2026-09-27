@@ -24,6 +24,8 @@
  */
 import teamsJson from '@/data/teams.zh.json'
 import leaguesJson from '@/data/leagues.zh.json'
+import leaguesEnJson from '@/data/leagues.en.json'
+import { getLang } from './i18n'
 
 /** JSON 里的说明字段，不是词条 */
 /**
@@ -43,6 +45,7 @@ function stripMeta(obj: Record<string, string>): Record<string, string> {
 
 export const BASE_TEAMS = stripMeta(teamsJson as Record<string, string>)
 export const BASE_LEAGUES = stripMeta(leaguesJson as Record<string, string>)
+const LEAGUES_EN = stripMeta(leaguesEnJson as Record<string, string>)
 
 const LS_TEAMS = 'dict.teams.zh'
 const LS_LEAGUES = 'dict.leagues.zh'
@@ -229,6 +232,25 @@ export function translateLeague(code: string | null | undefined): string | null 
   if (hit) return hit
   missingLeagues.add(code)
   return null
+}
+
+/**
+ * 按界面语言显示的队名 / 联赛名。
+ *
+ * 与 translateTeam / translateLeague 分开：那两个的语义是「中文译名」，词典管理页
+ * 和搜索都靠它（缺失表也是它记的），不能跟着界面语言变。界面上显示的走这两个。
+ */
+export function displayTeam(en: string | null | undefined): string {
+  return getLang() === 'en' ? (en ?? '') : translateTeam(en)
+}
+
+export function displayLeague(code: string | null | undefined): string | null {
+  return getLang() === 'en' ? leagueEn(code) : translateLeague(code)
+}
+
+/** 联赛英文名。查不到返回 null，口径同 translateLeague */
+export function leagueEn(code: string | null | undefined): string | null {
+  return code ? (LEAGUES_EN[code] ?? null) : null
 }
 
 /**

@@ -18,6 +18,7 @@
  * 这个模块是纯函数、无 DOM 依赖，可以直接用 node 测试跑：
  *   npx tsx --test frontend/src/lib/odds.test.ts
  */
+import { tr } from './i18n'
 
 export type PriceMode = 'prob' | 'odds'
 
@@ -61,7 +62,6 @@ export function formatPrice(price: number | null | undefined, mode: PriceMode): 
 }
 
 /** 模式切换按钮上的文字 */
-export const PRICE_MODE_LABEL: Record<PriceMode, string> = {
-  prob: '概率 %',
-  odds: '欧赔',
+export function priceModeLabel(mode: PriceMode): string {
+  return mode === 'odds' ? tr('欧赔', 'Odds') : tr('概率 %', 'Prob %')
 }

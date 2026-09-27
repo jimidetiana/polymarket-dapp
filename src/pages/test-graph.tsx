@@ -16,7 +16,7 @@ import { resolveTemplate, TEMPLATE_SLOTS } from '@/graph/template'
 import type { MarketDescriptor, GraphNode, GraphSide, GoalImpact } from '@/graph/types'
 import type { MarketGraph, GraphGoalCounts } from '@/types/market-graph'
 import type { ResolvedSlot } from '@/graph/template'
-import { PRICE_MODE_LABEL, type PriceMode } from '@/lib/odds'
+import { priceModeLabel, type PriceMode } from '@/lib/odds'
 
 const HOME_EN = 'Arsenal'
 const AWAY_EN = 'Chelsea'
@@ -173,7 +173,7 @@ export default function TestGraphPage() {
             onClick={() => setPriceMode(priceMode === 'prob' ? 'odds' : 'prob')}
             className="rounded-md border border-border bg-card px-2.5 py-1 text-xs text-foreground hover:bg-muted"
           >
-            {PRICE_MODE_LABEL[priceMode]}
+            {priceModeLabel(priceMode)}
           </button>
           <a
             href="#/"

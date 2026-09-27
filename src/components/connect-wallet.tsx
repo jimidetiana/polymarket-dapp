@@ -3,6 +3,7 @@ import { useAccount, useConnect, useDisconnect, useSwitchChain } from 'wagmi'
 import type { Connector } from 'wagmi'
 import { polygon } from 'wagmi/chains'
 import { formatPol, formatUsd } from '../lib/money'
+import { tr } from '../lib/i18n'
 import { useWalletBalances } from '../lib/use-wallet'
 import { cn } from '../lib/utils'
 
@@ -93,7 +94,7 @@ export function WalletMenu() {
         onClick={() => switchChain({ chainId: polygon.id })}
         className="rounded-md border border-warning/50 bg-warning/10 px-3 py-1.5 text-xs font-medium text-warning hover:bg-warning/20"
       >
-        切到 Polygon 网络
+        {tr('切到 Polygon 网络', 'Switch to Polygon')}
       </button>
     )
   }
@@ -129,7 +130,7 @@ export function WalletMenu() {
               }}
               className="mt-2 w-full rounded-md border border-border px-2 py-1.5 text-[11px] text-muted-foreground hover:bg-muted hover:text-foreground"
             >
-              断开连接
+              {tr('断开连接', 'Disconnect')}
             </button>
           </div>
         </>
@@ -208,7 +209,7 @@ function WalletPicker({
         rel="noreferrer"
         className="rounded-md border border-border px-3 py-1.5 text-xs text-muted-foreground hover:bg-muted hover:text-foreground"
       >
-        未检测到钱包
+        {tr('未检测到钱包', 'No wallet detected')}
       </a>
     )
   }
@@ -222,7 +223,7 @@ function WalletPicker({
           disabled={isPending}
           className="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-50"
         >
-          {isPending ? '连接中…' : `连接 ${connectors[0].name}`}
+          {isPending ? tr('连接中…', 'Connecting…') : tr(`连接 ${connectors[0].name}`, `Connect ${connectors[0].name}`)}
         </button>
         <ConnectError error={error} />
       </div>
@@ -237,7 +238,7 @@ function WalletPicker({
         disabled={isPending}
         className="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-50"
       >
-        {isPending ? '连接中…' : '连接钱包'}
+        {isPending ? tr('连接中…', 'Connecting…') : tr('连接钱包', 'Connect wallet')}
       </button>
 
       <ConnectError error={error} />
@@ -358,11 +359,14 @@ function explainConnectError(e: unknown): string {
 
   const text = texts.join(' | ')
   if (/-32002|already pending/i.test(text)) {
-    return 'MetaMask 里还有一个没处理完的连接请求（-32002）。打开 MetaMask 把那笔待确认的弹窗确认或取消掉，再点一次。'
+    return tr(
+      'MetaMask 里还有一个没处理完的连接请求（-32002）。打开 MetaMask 把那笔待确认的弹窗确认或取消掉，再点一次。',
+      'MetaMask still has a pending connection request (-32002). Open MetaMask, approve or cancel that pending prompt, then try again.',
+    )
   }
-  if (/reject|denied|refus/i.test(text)) return '你在钱包里拒绝了这次连接。'
+  if (/reject|denied|refus/i.test(text)) return tr('你在钱包里拒绝了这次连接。', 'You rejected the connection in your wallet.')
   // 兜底取**最里层**那条报文：外层的 "Failed to connect." 谁看了都没用
-  return msgs[msgs.length - 1] ?? texts[texts.length - 1] ?? '连接失败'
+  return msgs[msgs.length - 1] ?? texts[texts.length - 1] ?? tr('连接失败', 'Connection failed')
 }
 
 /**
@@ -417,7 +421,7 @@ export function WalletPanel() {
   if (!isConnected) {
     return (
       <>
-        <p className="text-xs text-muted-foreground">未连接。连接后显示链上余额。</p>
+        <p className="text-xs text-muted-foreground">{tr('未连接。连接后显示链上余额。', 'Not connected. Connect to see on-chain balances.')}</p>
       </>
     )
   }
@@ -425,7 +429,7 @@ export function WalletPanel() {
   if (!onPolygon) {
     return (
       <>
-        <p className="text-xs text-warning">当前网络不是 Polygon，余额与下单都不可用。</p>
+        <p className="text-xs text-warning">{tr('当前网络不是 Polygon，余额与下单都不可用。', 'Not on Polygon — balances and trading are unavailable.')}</p>
       </>
     )
   }
@@ -441,51 +445,51 @@ export function WalletPanel() {
             我以为的那个钱包的」正是最难自查的一类问题。名字摆在最前面，
             下面每一行读的都是这个钱包。 */}
         <Row
-          label="当前钱包"
+          label={tr('当前钱包', 'Wallet')}
           value={bal.connector?.name ?? '—'}
-          hint="dapp 实际在用的扩展"
+          hint={tr('dapp 实际在用的扩展', 'extension in use')}
         />
-        <Row label="签名地址" value={shortAddr(address)} mono hint="EOA，只负责签名" />
+        <Row label={tr('签名地址', 'Signer')} value={shortAddr(address)} mono hint={tr('EOA，只负责签名', 'EOA, signs only')} />
         <Row
-          label="资金地址"
-          value={proxy.isLoading ? '查询中…' : shortAddr(proxyAddr)}
+          label={tr('资金地址', 'Funds')}
+          value={proxy.isLoading ? tr('查询中…', 'Loading…') : shortAddr(proxyAddr)}
           mono
-          hint="Safe，钱在这里"
+          hint={tr('Safe，钱在这里', 'Safe, holds funds')}
         />
         <div className="h-px bg-border" />
         <Row
-          label="可交易余额"
+          label={tr('可交易余额', 'Tradable')}
           value={
             proxy.isLoading || bal.trading.isLoading
-              ? '读取中…'
+              ? tr('读取中…', 'Loading…')
               : proxyAddr
                 ? `$${formatUsd(inProxy)}`
                 : '—'
           }
           mono
-          hint="Safe 里的 USDC.e，下单用这个"
+          hint={tr('Safe 里的 USDC.e，下单用这个', 'USDC.e in the Safe, used for orders')}
         />
         {/* 签名地址有余额才显示：没存款时这一行就是那个「我的钱去哪了」的答案 */}
         {inEoa != null && inEoa > 0n && (
           <Row
-            label="签名地址 USDC.e"
+            label={tr('签名地址 USDC.e', 'Signer USDC.e')}
             value={`$${formatUsd(inEoa)}`}
             mono
-            hint="还没存款"
+            hint={tr('还没存款', 'not deposited')}
           />
         )}
         {inNative != null && inNative > 0n && (
           <Row
-            label="签名地址 USDC"
+            label={tr('签名地址 USDC', 'Signer USDC')}
             value={`$${formatUsd(inNative)}`}
             mono
-            hint="官方存款流程能收"
+            hint={tr('官方存款流程能收', 'accepted by official deposit')}
           />
         )}
         <div className="h-px bg-border" />
         <Row
           label="POL（gas）"
-          value={bal.pol.isLoading ? '读取中…' : formatPol(bal.pol.data?.value)}
+          value={bal.pol.isLoading ? tr('读取中…', 'Loading…') : formatPol(bal.pol.data?.value)}
           mono
         />
       </div>
@@ -497,7 +501,7 @@ export function WalletPanel() {
         实测 POL 为 0 也能存进去，比自己做既正确又省事。
       */}
       <PolymarketLink variant="button" className="mt-2.5">
-        去 Polymarket 存款
+        {tr('去 Polymarket 存款', 'Deposit on Polymarket')}
       </PolymarketLink>
 
       {/* 交易授权那只一半留着：它走 SDK 的 relayer，是正确且唯一可行的做法。
@@ -508,19 +512,22 @@ export function WalletPanel() {
         disabled={!proxyAddr}
         className="mt-1.5 w-full rounded-md border border-border px-2 py-1.5 text-[11px] font-medium text-foreground hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
       >
-        交易授权
+        {tr('交易授权', 'Trading approvals')}
       </button>
 
       {/* 还没存款。**这条是面板上最重要的一句话** —— 它解释的正是「钱读不出来」
           这个看起来像 bug 的现象，而它其实只是还差一步存款。 */}
       {notDeposited && (
         <p className="mt-2 rounded border border-warning/30 bg-warning/10 p-2 text-[10px] leading-snug text-warning">
-          钱在<span className="font-semibold">签名地址</span>上（$
-          {formatUsd(inEoa)}），还没进 Polymarket
-          的代理钱包，所以「可交易 pUSD」是 $0.00 —— 不是读错了，是还差一步存款。
-          这一步得在官网做（
+          {tr(
+            `钱在签名地址上（$${formatUsd(inEoa)}），还没进 Polymarket 的代理钱包，所以「可交易 pUSD」是 $0.00 —— 不是读错了，是还差一步存款。这一步得在官网做（`,
+            `Your funds ($${formatUsd(inEoa)}) are on the signer address and haven't reached your Polymarket proxy wallet yet, so tradable pUSD shows $0.00 — it's not a read error, you still need to deposit. That has to be done on the official site (`,
+          )}
           <PolymarketLink>polymarket.com</PolymarketLink>
-          ），存款会铸出交易用的 pUSD；本项目做不了这件事，也不该假装能做。
+          {tr(
+            '），存款会铸出交易用的 pUSD；本项目做不了这件事，也不该假装能做。',
+            '), which mints the pUSD used for trading; this app can’t do that step.',
+          )}
         </p>
       )}
 
@@ -528,16 +535,18 @@ export function WalletPanel() {
           但站内不要再暗示「自己转一笔就行」—— 那条路已经拆了。 */}
       {wrongToken && (
         <p className="mt-2 rounded border border-warning/30 bg-warning/10 p-2 text-[10px] leading-snug text-warning">
-          签名地址上是 ${formatUsd(inNative)} <span className="font-semibold">原生 USDC</span>，
-          不是 USDC.e。这不影响存款 —— 官方的存款流程两种都收，也会把该换的换掉。
-          直接走上面的入口就行。
+          {tr(
+            `签名地址上是 $${formatUsd(inNative)} 原生 USDC，不是 USDC.e。这不影响存款 —— 官方的存款流程两种都收，也会把该换的换掉。直接走上面的入口就行。`,
+            `The signer address holds $${formatUsd(inNative)} of native USDC, not USDC.e. That's fine — the official deposit flow accepts both and converts as needed. Just use the link above.`,
+          )}
         </p>
       )}
 
       <p className="mt-2 text-[10px] leading-snug text-muted-foreground">
-        「可交易 pUSD」读的是<span className="text-foreground">代理钱包</span>——
-        Polymarket 把交易资金放在那里，读签名地址会永远显示 $0。
-        pUSD 是 Polymarket 的抵押代币，由官方存款流程铸造。gas 从签名地址出。
+        {tr(
+          '「可交易 pUSD」读的是代理钱包 —— Polymarket 把交易资金放在那里，读签名地址会永远显示 $0。pUSD 是 Polymarket 的抵押代币，由官方存款流程铸造。gas 从签名地址出。',
+          'Tradable pUSD is read from the proxy wallet — Polymarket keeps trading funds there, so the signer address would always show $0. pUSD is Polymarket’s collateral token, minted by the official deposit flow. Gas is paid from the signer address.',
+        )}
       </p>
 
       {approvalsOpen && (

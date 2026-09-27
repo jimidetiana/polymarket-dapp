@@ -34,6 +34,8 @@
  * conditionId 要从 Gamma 一路带到 ResolvedSlot 上的原因。
  */
 
+import { tr } from './i18n'
+
 const DATA_API_BASE = 'https://data-api.polymarket.com'
 
 /**
@@ -120,12 +122,22 @@ export function positionKind(p: PolyPosition): PositionKind {
 export type PositionIndex = {
   /** tokenId → 该 token 的仓位。画布按 slot.tokenId 查它 */
   byToken: ReadonlyMap<string, PolyPosition>
+  /**
+   * conditionId → 这张盘上的仓位（去重后，可能两侧都有）。
+   *
+   * 给画布标**另一侧**的仓位用：大小球的 Under、胜平负的 No 这些侧在模板里没有自己的
+   * 槽位（见 graph/template.ts，槽位只显示 Over/Yes/被点名球队那一侧），持在那儿的仓位
+   * 按 tokenId 查一定落空。conditionId 是两侧共用的，借它把仓位关联到对面那个已显示的
+   * 槽位上（见 slotPositionMark）。
+   */
+  byCondition: ReadonlyMap<string, PolyPosition[]>
   /** 有仓位的赛事 id。比赛列表按 match.eventIds 查它 */
   eventIds: ReadonlySet<string>
 }
 
 export const EMPTY_POSITION_INDEX: PositionIndex = {
   byToken: new Map(),
+  byCondition: new Map(),
   eventIds: new Set(),
 }
 
@@ -147,7 +159,53 @@ export function indexPositions(rows: readonly PolyPosition[]): PositionIndex {
     if (!prev || Math.abs(p.size) > Math.abs(prev.size)) byToken.set(p.asset, p)
     if (p.eventId) eventIds.add(String(p.eventId))
   }
-  return { byToken, eventIds }
+  // byCondition 从**去重后**的 byToken 建，而不是从原始行 —— 两张表里代表同一个 token
+  // 的必须是同一条仓位，否则「另一侧」标记显示的数字会和角标查出来的对不上。
+  const byCondition = new Map<string, PolyPosition[]>()
+  for (const p of byToken.values()) {
+    if (!p.conditionId) continue
+    const arr = byCondition.get(p.conditionId)
+    if (arr) arr.push(p)
+    else byCondition.set(p.conditionId, [p])
+  }
+  return { byToken, byCondition, eventIds }
+}
+
+export type SlotPositionMark = {
+  position: PolyPosition
+  /**
+   * true = 仓位正好在该槽位显示的那一侧；false = 在同一张盘的**另一侧**（那一侧图上没有
+   * 自己的槽位，借这个槽位标出来）。画布用它决定角标颜色：另一侧换个色。
+   */
+  ownSide: boolean
+}
+
+/**
+ * 一个槽位该画什么持仓角标。
+ *
+ * 先看**这一侧**（slot.tokenId）：命中即 ownSide=true，跟原来一样。没命中再看**同一张盘
+ * 的另一侧**（同 conditionId、token 不同）—— Under、No 这类侧在模板里没有槽位，持在那儿
+ * 的仓位本来无处可标，就借它对面那个已显示的槽位标出来（ownSide=false）。
+ *
+ * `displayedTokens` 是图上所有已显示的 token，用来排除「另一侧其实也有槽位」的情况：
+ * 让球盘两侧各占一个槽位（见 template.ts 让球那段），各自按 ownSide 标即可，不该在对面
+ * 再重复标一次。
+ */
+export function slotPositionMark(
+  slot: { tokenId: string | null; conditionId: string | null },
+  index: PositionIndex,
+  displayedTokens: ReadonlySet<string>,
+): SlotPositionMark | null {
+  if (slot.tokenId) {
+    const own = index.byToken.get(slot.tokenId)
+    if (own) return { position: own, ownSide: true }
+  }
+  if (!slot.conditionId) return null
+  const group = index.byCondition.get(slot.conditionId)
+  if (!group) return null
+  // 另一侧：同盘、不是本槽显示的 token、且它自己在图上没有槽位（有的话该由它自己标）
+  const other = group.find((p) => p.asset !== slot.tokenId && !displayedTokens.has(p.asset))
+  return other ? { position: other, ownSide: false } : null
 }
 
 /**
@@ -213,7 +271,7 @@ async function get(path: string, params: Record<string, string | number>): Promi
   const qs = new URLSearchParams()
   for (const [k, v] of Object.entries(params)) qs.set(k, String(v))
   const res = await fetch(`${DATA_API_BASE}${path}?${qs}`)
-  if (!res.ok) throw new Error(`data-api 返回 HTTP ${res.status}`)
+  if (!res.ok) throw new Error(tr(`data-api 返回 HTTP ${res.status}`, `data-api returned HTTP ${res.status}`))
   const data = await res.json()
   // 不是数组就当没有：这个接口正常返回裸数组，返回别的形状说明它变了，
   // 而猜一个新形状比返回空更容易把错误数据画到图上

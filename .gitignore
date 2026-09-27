@@ -11,6 +11,7 @@ node_modules
 dist
 dist-ssr
 *.local
+.wrangler
 
 # 私钥 / 环境。dapp 里用户私钥不会进代码（只拿签名能力），
 # 但 builder 收款地址、测试用私钥这类以后可能塞进 .env，提前挡住。
@@ -33,3 +34,6 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+.dev.vars*
+!.dev.vars.example

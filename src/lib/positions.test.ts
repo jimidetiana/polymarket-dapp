@@ -11,6 +11,7 @@ import {
   indexPositions,
   matchHasPosition,
   positionKind,
+  slotPositionMark,
   type PolyPosition,
 } from './positions'
 
@@ -104,4 +105,59 @@ test('matchHasPosition：任一子赛事命中即算有仓', () => {
 test('matchHasPosition：空集合或空 eventIds 都是 false', () => {
   assert.equal(matchHasPosition(['100'], new Set()), false)
   assert.equal(matchHasPosition([], new Set(['100'])), false)
+})
+
+// ── slotPositionMark：同一侧 / 另一侧 ────────────────────────────────
+
+test('indexPositions：byCondition 按 conditionId 归拢两侧', () => {
+  const idx = indexPositions([
+    mk({ asset: 'over', conditionId: '0xou', outcome: 'Over' }),
+    mk({ asset: 'under', conditionId: '0xou', outcome: 'Under' }),
+    mk({ asset: 'yes', conditionId: '0xml', outcome: 'Yes' }),
+  ])
+  assert.equal(idx.byCondition.get('0xou')?.length, 2)
+  assert.equal(idx.byCondition.get('0xml')?.length, 1)
+})
+
+test('slotPositionMark：持在本槽这一侧 → ownSide', () => {
+  const idx = indexPositions([mk({ asset: 'over', conditionId: '0xou', outcome: 'Over' })])
+  const displayed = new Set(['over'])
+  const mark = slotPositionMark({ tokenId: 'over', conditionId: '0xou' }, idx, displayed)
+  assert.equal(mark?.ownSide, true)
+  assert.equal(mark?.position.outcome, 'Over')
+})
+
+test('slotPositionMark：持在同盘另一侧（该侧无槽位）→ 借本槽标出，ownSide=false', () => {
+  // 只持 Under，图上只显示 Over 槽位。Under 在模板里没有自己的槽位
+  const idx = indexPositions([mk({ asset: 'under', conditionId: '0xou', outcome: 'Under' })])
+  const displayed = new Set(['over']) // Under 不在其中
+  const mark = slotPositionMark({ tokenId: 'over', conditionId: '0xou' }, idx, displayed)
+  assert.equal(mark?.ownSide, false)
+  assert.equal(mark?.position.outcome, 'Under')
+})
+
+test('slotPositionMark：另一侧自己也有槽位（让球盘）→ 不在对面重复标', () => {
+  // 让球盘两侧各占一个槽位：homeTok、awayTok 都在图上显示
+  const idx = indexPositions([mk({ asset: 'awayTok', conditionId: '0xsp', outcome: 'Away -1.5' })])
+  const displayed = new Set(['homeTok', 'awayTok'])
+  // 站在 home 那个槽位看：本侧没仓，另一侧的 awayTok 自己有槽位 → 不借这里标
+  const mark = slotPositionMark({ tokenId: 'homeTok', conditionId: '0xsp' }, idx, displayed)
+  assert.equal(mark, null)
+})
+
+test('slotPositionMark：本盘一条仓位都没有 → null', () => {
+  const idx = indexPositions([mk({ asset: 'other', conditionId: '0xelse' })])
+  const mark = slotPositionMark({ tokenId: 'over', conditionId: '0xou' }, idx, new Set(['over']))
+  assert.equal(mark, null)
+})
+
+test('slotPositionMark：本侧优先于另一侧', () => {
+  // 两侧都持有：应返回本侧那条（ownSide=true），不返回另一侧
+  const idx = indexPositions([
+    mk({ asset: 'over', conditionId: '0xou', outcome: 'Over' }),
+    mk({ asset: 'under', conditionId: '0xou', outcome: 'Under' }),
+  ])
+  const mark = slotPositionMark({ tokenId: 'over', conditionId: '0xou' }, idx, new Set(['over']))
+  assert.equal(mark?.ownSide, true)
+  assert.equal(mark?.position.outcome, 'Over')
 })

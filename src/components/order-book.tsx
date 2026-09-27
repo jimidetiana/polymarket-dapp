@@ -6,6 +6,7 @@
  * 格式化，不会出现「深度显示 0.155、限量框显示 0.16」这种自相矛盾。
  */
 import { cn } from '../lib/utils'
+import { tr } from '../lib/i18n'
 import { formatTickPrice, type TickSize } from '../lib/tick'
 import type { BookLevelView, BookView } from '../lib/use-clob'
 
@@ -23,23 +24,23 @@ export function OrderBook({ book, loading, error, tick, onPick }: Props) {
   if (error) {
     return (
       <div className="rounded-lg border border-border bg-background p-3 text-[11px] text-warning">
-        盘口深度拉不到：{error}
+        {tr('盘口深度拉不到：', "Couldn't load order book: ")}{error}
       </div>
     )
   }
   if (loading && !book) {
     return (
       <div className="rounded-lg border border-border bg-background p-3 text-[11px] text-muted-foreground">
-        读取盘口深度…
+        {tr('读取盘口深度…', 'Loading order book…')}
       </div>
     )
   }
   if (!book || (!book.asks.length && !book.bids.length)) {
     return (
       <div className="rounded-lg border border-border bg-background p-3 text-[11px] leading-snug text-muted-foreground">
-        这个盘口此刻没有任何挂单，所以没有可成交的价。
+        {tr('这个盘口此刻没有任何挂单，所以没有可成交的价。', 'This market has no resting orders right now, so there is no fillable price.')}
         <br />
-        赛前盘口常常是这样 —— 限价单可以挂，但不会立刻成交。
+        {tr('赛前盘口常常是这样 —— 限价单可以挂，但不会立刻成交。', 'Common before kickoff — limit orders can rest, but won’t fill immediately.')}
       </div>
     )
   }
@@ -53,10 +54,10 @@ export function OrderBook({ book, loading, error, tick, onPick }: Props) {
   return (
     <div className="space-y-1 rounded-lg border border-border bg-background p-2">
       <div className="flex items-center justify-between px-1 text-[10px] text-muted-foreground">
-        <span>盘口深度</span>
+        <span>{tr('盘口深度', 'Order book')}</span>
         <span>
-          {book.minOrderSize != null && `最小 ${book.minOrderSize} 份 · `}
-          点价格填入限价
+          {book.minOrderSize != null && tr(`最小 ${book.minOrderSize} 份 · `, `Min ${book.minOrderSize} shares · `)}
+          {tr('点价格填入限价', 'Click a price to set limit')}
         </span>
       </div>
 
@@ -65,11 +66,11 @@ export function OrderBook({ book, loading, error, tick, onPick }: Props) {
         {[...asks].reverse().map((l, i) => (
           <DepthRow key={`ask${i}`} level={l} tick={tick} side="ask" maxSize={maxSize} onPick={onPick} />
         ))}
-        {asks.length === 0 && <EmptyRow>无卖盘</EmptyRow>}
+        {asks.length === 0 && <EmptyRow>{tr('无卖盘', 'No asks')}</EmptyRow>}
       </div>
 
       <div className="flex items-center justify-between border-y border-border px-1 py-1 text-[10px]">
-        <span className="text-muted-foreground">点差</span>
+        <span className="text-muted-foreground">{tr('点差', 'Spread')}</span>
         <span className="font-mono tnum text-foreground">
           {spread == null ? '—' : formatTickPrice(spread, tick)}
         </span>
@@ -80,7 +81,7 @@ export function OrderBook({ book, loading, error, tick, onPick }: Props) {
         {bids.map((l, i) => (
           <DepthRow key={`bid${i}`} level={l} tick={tick} side="bid" maxSize={maxSize} onPick={onPick} />
         ))}
-        {bids.length === 0 && <EmptyRow>无买盘</EmptyRow>}
+        {bids.length === 0 && <EmptyRow>{tr('无买盘', 'No bids')}</EmptyRow>}
       </div>
     </div>
   )

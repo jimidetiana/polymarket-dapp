@@ -24,6 +24,7 @@ import { signerFrom } from '@polymarket/client/viem'
 import { createPublicClient as createViemPublicClient, erc1155Abi, erc20Abi, http, type WalletClient } from 'viem'
 import { polygon } from 'viem/chains'
 import { builderCode } from './builder'
+import { tr } from './i18n'
 import { resolveSigningUrl, resetSigningUrl } from './polymarket-config'
 import { PUSD_POLYGON } from './proxy-wallet'
 
@@ -352,9 +353,12 @@ export async function cancelOrderById(client: SecureClient, orderId: string): Pr
     : []
   const notCanceled = (r as { notCanceled?: Record<string, string> }).notCanceled ?? {}
   const failed = Object.keys(notCanceled)
-  if (failed.length) return `部分未撤销：${failed.map((id) => `${id}（${notCanceled[id]}）`).join('、')}`
-  if (canceled.includes(orderId)) return '已撤销'
-  return '已提交撤销请求'
+  if (failed.length) {
+    const list = failed.map((id) => `${id} (${notCanceled[id]})`).join(', ')
+    return tr(`部分未撤销：${list}`, `Some not cancelled: ${list}`)
+  }
+  if (canceled.includes(orderId)) return tr('已撤销', 'Cancelled')
+  return tr('已提交撤销请求', 'Cancel request submitted')
 }
 
 // ── 错误翻译 ─────────────────────────────────────────────
@@ -393,7 +397,8 @@ export function explainError(e: unknown): string {
     /user (rejected|denied|cancell?ed)/i.test(all) ||
     /\b4001\b/.test(all)
   if (isCancel) {
-    return innermost ? `你在钱包里拒绝了这次签名。（钱包回报：${innermost}）` : '你在钱包里拒绝了这次签名。'
+    const base = tr('你在钱包里拒绝了这次签名。', 'You rejected the signature in your wallet.')
+    return innermost ? tr(`${base}（钱包回报：${innermost}）`, `${base} (wallet said: ${innermost})`) : base
   }
   return innermost || String(e)
 }

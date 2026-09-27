@@ -40,7 +40,8 @@ const OrderDialog = lazy(() =>
 )
 import { useSoccerMatches, useMarketGraph, usePositionMatches, TEMPLATE_EDGES } from './lib/use-graph'
 import { defaultMatchId, mergeMatchLists } from './lib/match-list'
-import { PRICE_MODE_LABEL, type PriceMode } from './lib/odds'
+import { priceModeLabel, type PriceMode } from './lib/odds'
+import { setLang, tr, useLang } from './lib/i18n'
 /**
  * 持仓。走公开 REST（lib/positions.ts），**不碰 SDK** —— 画布和比赛列表都在主包里，
  * 引一个间接依赖 SDK 的 hook 会把那 300 kB 打回首屏（见 lib/use-positions.ts 顶部）。
@@ -74,13 +75,15 @@ function useHash(): string {
 
 export default function App() {
   const hash = useHash()
+  // 在根上订阅：切换语言时整棵树重渲染（组件都没包 memo）
+  useLang()
 
   if (DictAdmin && hash === '#/dict') {
     return (
       <Suspense
         fallback={
           <div className="flex h-dvh items-center justify-center bg-background text-sm text-muted-foreground">
-            加载中…
+            {tr('加载中…', 'Loading…')}
           </div>
         }
       >
@@ -94,7 +97,7 @@ export default function App() {
       <Suspense
         fallback={
           <div className="flex h-dvh items-center justify-center bg-background text-sm text-muted-foreground">
-            加载中…
+            {tr('加载中…', 'Loading…')}
           </div>
         }
       >
@@ -107,6 +110,7 @@ export default function App() {
 }
 
 function GraphPage() {
+  const lang = useLang()
   const { matches, loading, error, network, reload } = useSoccerMatches()
   /**
    * 持仓标记的数据源。一次取全账户，两处共用：画布按 tokenId 查、列表按 eventId 查。
@@ -229,7 +233,7 @@ function GraphPage() {
           <button
             type="button"
             onClick={() => setNavOpen(true)}
-            aria-label="打开菜单"
+            aria-label={tr('打开菜单', 'Open menu')}
             className="rounded-md border border-border p-1.5 text-foreground/80 hover:bg-muted lg:hidden"
           >
             <MenuIcon />
@@ -247,7 +251,16 @@ function GraphPage() {
             onClick={() => setPriceMode(priceMode === 'prob' ? 'odds' : 'prob')}
             className="rounded-md border border-border px-2 py-1 text-[11px] text-foreground/80 hover:bg-muted"
           >
-            {PRICE_MODE_LABEL[priceMode]}
+            {priceModeLabel(priceMode)}
+          </button>
+
+          {/* 语言切换。按钮上写的是「切过去之后」的语言，和常见站点一致 */}
+          <button
+            type="button"
+            onClick={() => setLang(lang === 'en' ? 'zh' : 'en')}
+            className="rounded-md border border-border px-2 py-1 text-[11px] text-foreground/80 hover:bg-muted"
+          >
+            {lang === 'en' ? '中文' : 'EN'}
           </button>
 
           {/* 词典入口只在开发时出现。与上面的 lazy 用同一个编译期常量，
@@ -257,7 +270,7 @@ function GraphPage() {
               href="#/dict"
               className="rounded-md border border-border px-2 py-1 text-[11px] text-muted-foreground hover:bg-muted"
             >
-              词典
+              {tr('词典', 'Dict')}
             </a>
           )}
 
@@ -311,7 +324,7 @@ function GraphPage() {
             <button
               type="button"
               onClick={() => setNavOpen(false)}
-              aria-label="关闭菜单"
+              aria-label={tr('关闭菜单', 'Close menu')}
               className="rounded-md border border-border px-2 py-0.5 text-xs text-muted-foreground hover:bg-muted hover:text-foreground"
             >
               ✕
@@ -321,8 +334,8 @@ function GraphPage() {
           {/* 左栏只有比赛列表一件事。标题行是固定的（不折叠）：只有一块内容时
               折叠控件没有意义，而「N 场」这个计数值得一直看得见 */}
           <div className="flex items-baseline justify-between gap-2 border-b border-border px-3 py-2.5">
-            <span className="text-xs font-semibold text-foreground">比赛</span>
-            <span className="text-[10px] text-muted-foreground">{allMatches.length} 场</span>
+            <span className="text-xs font-semibold text-foreground">{tr('比赛', 'Matches')}</span>
+            <span className="text-[10px] text-muted-foreground">{tr(`${allMatches.length} 场`, `${allMatches.length}`)}</span>
           </div>
 
           <div className="p-3">
@@ -348,14 +361,16 @@ function GraphPage() {
             所以那一圈的间距只能由画布这边让出来 */}
         <section className="m-3 flex min-h-0 min-w-0 flex-1 rounded-lg border border-border bg-card">
           {loading ? (
-            <Centered>正在拉取比赛…</Centered>
+            <Centered>{tr('正在拉取比赛…', 'Loading matches…')}</Centered>
           ) : error && matches.length === 0 ? (
             <Centered>
               <p className="text-sm text-warning">{error}</p>
               {network && (
                 <p className="max-w-md text-center text-[11px] leading-relaxed text-muted-foreground">
-                  浏览器连不上 gamma-api.polymarket.com。这个接口 CORS 是全开的，
-                  连不上通常是网络层被拦 —— 确认能直接打开 polymarket.com。
+                  {tr(
+                    '浏览器连不上 gamma-api.polymarket.com。这个接口 CORS 是全开的，连不上通常是网络层被拦 —— 确认能直接打开 polymarket.com。',
+                    "The browser can't reach gamma-api.polymarket.com. Its CORS is fully open, so this is usually blocked at the network layer — check that polymarket.com opens directly.",
+                  )}
                 </p>
               )}
               <button
@@ -363,7 +378,7 @@ function GraphPage() {
                 onClick={reload}
                 className="rounded-md border border-border px-2.5 py-1 text-[11px] text-foreground/80 hover:bg-muted"
               >
-                重试
+                {tr('重试', 'Retry')}
               </button>
             </Centered>
           ) : graph ? (
@@ -376,7 +391,7 @@ function GraphPage() {
               prevPrices={prevPrices}
               selectedKey={selectedKey}
               onSelect={setSelectedKey}
-              positionsByToken={positions.byToken}
+              positions={positions}
               onBuy={(s) => {
                 // 点节点永远从槽位自己的那一侧开始；上一次在弹窗里切的侧不带过来
                 setPickedKey(s.key)
@@ -385,7 +400,7 @@ function GraphPage() {
               }}
             />
           ) : marketsLoading ? (
-            <Centered>正在拉取盘口…</Centered>
+            <Centered>{tr('正在拉取盘口…', 'Loading markets…')}</Centered>
           ) : marketsError ? (
             <Centered>
               <p className="text-sm text-warning">{marketsError}</p>
@@ -394,11 +409,11 @@ function GraphPage() {
                 onClick={reloadMarkets}
                 className="rounded-md border border-border px-2.5 py-1 text-[11px] text-foreground/80 hover:bg-muted"
               >
-                重试
+                {tr('重试', 'Retry')}
               </button>
             </Centered>
           ) : (
-            <Centered>选一场比赛</Centered>
+            <Centered>{tr('选一场比赛', 'Pick a match')}</Centered>
           )}
         </section>
 
@@ -411,7 +426,7 @@ function GraphPage() {
         <Suspense
           fallback={
             <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/70 p-3 text-sm text-muted-foreground backdrop-blur-sm">
-              正在加载下单面板…
+              {tr('正在加载下单面板…', 'Loading order panel…')}
             </div>
           }
         >

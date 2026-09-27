@@ -27,6 +27,26 @@
  * 一张盘喂两个槽位，两个槽位的价格之和应当≈1，正好可以互相校验。
  */
 import type { MarketGraph, GraphNode, Period } from './types.js'
+import { getLang } from '../lib/i18n'
+
+/**
+ * 槽位标签的英文版。从 key 推而不是每个槽位再写一个字段：key 的形状是固定的
+ * （total_2.5 / home_1.5 / sp_away_-1.5 …），26 行几乎一样的 labelEn 只是噪音。
+ */
+function slotLabel(slot: TemplateSlot): string {
+  if (getLang() !== 'en') return slot.label
+  const k = slot.key
+  const side = (s: string) => (s === 'home' ? 'Home' : 'Away')
+  let m: RegExpMatchArray | null
+  if ((m = k.match(/^total_(.+)$/))) return `O/U ${m[1]}`
+  if ((m = k.match(/^(home|away)_(.+)$/))) return `${side(m[1])} O/U ${m[2]}`
+  if ((m = k.match(/^sp_(home|away)_(.+)$/))) return `${side(m[1])} ${m[2]}`
+  if (k === 'goals_total') return 'Goals'
+  if ((m = k.match(/^goals_(home|away)$/))) return `${side(m[1])} goals`
+  if (k === 'ml_draw') return 'Draw'
+  if ((m = k.match(/^ml_(home|away)$/))) return `${side(m[1])} win`
+  return slot.label
+}
 
 export type SlotKind = 'goals' | 'market'
 
@@ -346,6 +366,7 @@ export function resolveTemplate(graph: MarketGraph, goals: GoalCounts): Resolved
   return TEMPLATE_SLOTS.map((slot) => {
     const base: ResolvedSlot = {
       ...slot,
+      label: slotLabel(slot),
       nodeId: null,
       marketId: null,
       conditionId: null,

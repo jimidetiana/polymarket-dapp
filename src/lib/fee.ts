@@ -45,6 +45,7 @@
  * 核对过 `/builder/trades` 回执：`builderFee` 恒 = `sizeUsdc × 5 bps`（分以下的
  * 小数），公式对上了。所以下面 `feeUsdOf` 精确到分以下，不再向上取整。
  */
+import { tr } from './i18n'
 
 /**
  * 一组费率。maker 与 taker 现在同值，但**它们是可以分开的**（官方设置页两个
@@ -179,8 +180,8 @@ export function settleOf(
   side: 'BUY' | 'SELL',
 ): { label: string; usd: number } {
   return side === 'BUY'
-    ? { label: b.feeUsd > 0 ? '合计（实际扣款）' : '预估总额', usd: b.totalUsd }
-    : { label: b.feeUsd > 0 ? '合计（扣费后到账）' : '预估总额', usd: b.proceedsUsd }
+    ? { label: b.feeUsd > 0 ? tr('合计（实际扣款）', 'Total (charged)') : tr('预估总额', 'Est. total'), usd: b.totalUsd }
+    : { label: b.feeUsd > 0 ? tr('合计（扣费后到账）', 'Total (after fees)') : tr('预估总额', 'Est. total'), usd: b.proceedsUsd }
 }
 
 /**
