@@ -30,6 +30,8 @@ function mk(over: Partial<PolyPosition> & { asset: string }): PolyPosition {
     outcome: 'Yes',
     eventId: '100',
     title: 'T',
+    icon: '',
+    endDate: '',
     ...over,
   }
 }

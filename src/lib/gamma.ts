@@ -47,6 +47,10 @@ export type GammaTag = { id?: string; slug?: string; label?: string }
 export type GammaMarket = {
   id: string
   question?: string
+  /** 结果的展示名（如 "Odisha FC" / "O/U 1.5" / "Both Teams to Score" / 让球带线值） */
+  groupItemTitle?: string
+  /** 盘口玩法类型（如 moneyline / totals / spreads / soccer_halftime_result …） */
+  sportsMarketType?: string
   /**
    * 盘口的链上 condition id。
    *
@@ -439,6 +443,71 @@ export async function fetchMatchesByIds(eventIds: readonly string[]): Promise<So
   })
   if (!Array.isArray(events)) throw new GammaError(NOT_ARRAY(), false)
   return mergeIntoMatches(events.filter(isSoccer))
+}
+
+/**
+ * 按赛事 id 拉一批**原始赛事**（含各自 markets），给「我的持仓」导出用 —— 需要赛事标题
+ * （"A vs B [- 盘口]"）和每个 market 的 groupItemTitle / sportsMarketType / clobTokenIds。
+ *
+ * 不做 isSoccer 过滤、不加时间窗：持仓所在的赛事常已 closed；非足球的赛事也一并返回，
+ * 由 buildPositionMarketIndex 照常建索引（拿不到的仓位在导出侧走兜底）。按 100 一页分批。
+ */
+export async function fetchEventsByIds(eventIds: readonly string[]): Promise<GammaEvent[]> {
+  const ids = [...new Set(eventIds.map(String))].filter(Boolean)
+  if (ids.length === 0) return []
+  const out: GammaEvent[] = []
+  for (let i = 0; i < ids.length && i < PAGE_SIZE * MAX_PAGES; i += PAGE_SIZE) {
+    const chunk = ids.slice(i, i + PAGE_SIZE)
+    const events = await gammaGet<GammaEvent[]>('/events', { id: chunk, limit: PAGE_SIZE })
+    if (Array.isArray(events)) out.push(...events)
+  }
+  return out
+}
+
+/** 一个 token（结果代币）对应的盘口信息，供「我的持仓」导出把比赛 / 盘口 / 选择摆清楚 */
+export type PositionMarketInfo = {
+  /** 比赛：赛事标题去掉衍生后缀后的 "A vs B"（原文，分组键与展示前的本地化都用它） */
+  match: string
+  /** 赛事标题里 "A vs B" 之后的后缀（原文，如 "Halftime Result"）；moneyline 为空 */
+  suffix: string
+  /** 盘口玩法类型（moneyline / totals / spreads / soccer_halftime_result …） */
+  sportsType: string
+  /** 结果展示名（groupItemTitle，如 "Odisha FC" / "O/U 1.5"） */
+  groupItemTitle: string
+  /** 让球 / 大小球的线值 */
+  line: number | null
+  /** 该盘口的结果集，如 ["Yes","No"] / ["Over","Under"] / [队A,队B] */
+  outcomes: string[]
+}
+
+/**
+ * 把一批赛事摊成「tokenId → 盘口信息」索引。
+ *
+ * 持仓（data-api）只带得到 tokenId（=asset）和 Yes/No/Over/Under 之类的 outcome，**拿不到
+ * 「谁对谁」**——那只在 Gamma 赛事标题里。这里按每个 market 的 clobTokenIds 把两个 token 都
+ * 指到它所属赛事的 "A vs B" 上，导出时用 asset 一查就知道是哪场比赛、什么盘口。
+ */
+export function buildPositionMarketIndex(events: readonly GammaEvent[]): Map<string, PositionMarketInfo> {
+  const idx = new Map<string, PositionMarketInfo>()
+  for (const e of events) {
+    const title = e.title ?? ''
+    const match = baseTitle(title)
+    const suffix = title.slice(match.length).replace(/^\s*[-–—]\s*/, '').trim()
+    for (const m of e.markets ?? []) {
+      const tokens = parseJsonArray<string>(m.clobTokenIds)
+      if (tokens.length === 0) continue
+      const info: PositionMarketInfo = {
+        match,
+        suffix,
+        sportsType: m.sportsMarketType ?? '',
+        groupItemTitle: m.groupItemTitle ?? '',
+        line: m.line == null ? null : Number(m.line),
+        outcomes: parseJsonArray<string>(m.outcomes),
+      }
+      for (const t of tokens) if (t) idx.set(String(t), info)
+    }
+  }
+  return idx
 }
 
 /**

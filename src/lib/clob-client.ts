@@ -113,6 +113,8 @@ export async function fetchFeeRates(): Promise<{ makerBps: number; takerBps: num
 
 // ── 已认证客户端（每个签名地址一个，缓存 Promise）──────────
 const CLIENTS = new Map<string, Promise<SecureClient>>()
+/** 查挂单 / 撤单专用的那一份，见 getReadClient */
+const READ_CLIENTS = new Map<string, Promise<SecureClient>>()
 
 export type SecureClientRequest = {
   /** 签名者地址（EOA）。POLY_ADDRESS 用它 */
@@ -135,6 +137,44 @@ export function getSecureClient(req: SecureClientRequest): Promise<SecureClient>
 
 export function resetSecureClients(): void {
   CLIENTS.clear()
+  READ_CLIENTS.clear()
+}
+
+/**
+ * 查挂单 / 撤单专用的已认证客户端：和 getSecureClient **同一套 L2 凭据、同一个账户
+ * 钱包**，唯一的区别是**不带 builder 头**。
+ *
+ * 为什么要第二个：createSecureClient 传了 `apiKey: remoteBuilderSigning` 之后，SDK 给
+ * 发往 CLOB 的**每一个**请求都挂 POLY_BUILDER_* 头（它的 resolveClobHeaders 不分请求
+ * 方法），连 GET /data/orders 也挂（经典 clob-client 的 getOpenOrders 也特意这么挂，
+ * 注释管它叫 builders flow —— 带不带这组头，CLOB 走的不是同一条路）。实测那样查：
+ * 鉴权通过、正常返回，但恒为 0 条，而同一笔单在官网上挂着。我们的请求比官网多出来的
+ * 就是这组头，所以查挂单改走不带它的常规路径。撤单同理（经典 clob-client 撤单本来就不挂）。
+ *
+ * ⚠️ 这一条是按上面的差异推出来的，换过之后要看一次实测：官网挂着单、这里仍是 0，
+ * 就不是 builder 头的问题，见 listOpenOrders 里那行诊断日志。
+ *
+ * 传已有凭据建，SDK 只发一次 GET /auth/api-keys 校验，**不会再弹签名**。
+ * 下单 / 授权仍走 getSecureClient：builder 归因和免 gas 都靠那边的 apiKey。
+ */
+export function getReadClient(req: SecureClientRequest): Promise<SecureClient> {
+  const key = req.eoa.toLowerCase()
+  const hit = READ_CLIENTS.get(key)
+  if (hit) return hit
+  const p = getSecureClient(req)
+    .then((main) =>
+      createSecureClient({
+        signer: signerFrom(req.walletClient),
+        credentials: main.credentials,
+        wallet: main.account.wallet,
+      }),
+    )
+    .catch((e: unknown) => {
+      READ_CLIENTS.delete(key) // 失败不留坏缓存
+      throw e
+    })
+  READ_CLIENTS.set(key, p)
+  return p
 }
 
 async function createClient({ eoa, walletClient }: SecureClientRequest): Promise<SecureClient> {
@@ -312,6 +352,7 @@ export async function setupApprovals(client: SecureClient): Promise<void> {
   await client.setupTradingApprovals()
 }
 
+/** `client` 传 getReadClient 那一份（不带 builder 头），理由见那边。 */
 export async function listOpenOrders(client: SecureClient): Promise<OpenOrderRow[]> {
   // 翻**所有页**，不再只取 firstPage —— 挂单多于一页时 firstPage 会漏后面几页。
   // Paginated 是 async-iterable，for await 会自动跟着 nextCursor 走到没有下一页。
@@ -320,10 +361,9 @@ export async function listOpenOrders(client: SecureClient): Promise<OpenOrderRow
     if (Array.isArray(page?.items)) items.push(...(page.items as Array<Record<string, unknown>>))
   }
 
-  // 诊断：查不到挂单时，先分清是「这个账户名下确实没有 resting 单」还是「订单挂在
-  // 另一个地址上」。account.wallet 是我们查询/下单用的 maker；order.owner / makerAddress
-  // 是 CLOB 记的订单归属。两者对不上 = 身份问题；对得上却为 0 = 真的没有 resting 单
-  // （多半是那笔限价单其实成交了）。别删——这是「下单成功却查不到」唯一的现场线索。
+  // 诊断，别删。官网上挂着单、这里却是 0 时先看这一行：已经走不带 builder 头的
+  // 客户端还是 0，就不是 builder 头的问题，要往「这把 API key 按什么地址过滤订单」
+  // 上查 —— account.wallet 是我们下单用的 maker，owners / makers 是 CLOB 记的归属。
   const acct = client.account
   console.info('[clob] listOpenOrders：', {
     authWallet: acct?.wallet,
@@ -346,6 +386,7 @@ export async function listOpenOrders(client: SecureClient): Promise<OpenOrderRow
   }))
 }
 
+/** 同 listOpenOrders，`client` 传 getReadClient 那一份。 */
 export async function cancelOrderById(client: SecureClient, orderId: string): Promise<string> {
   const r = await client.cancelOrder({ orderId })
   const canceled = Array.isArray((r as { canceled?: unknown }).canceled)

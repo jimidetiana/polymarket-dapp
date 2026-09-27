@@ -370,8 +370,280 @@ export function translateQuestion(
     text = text.replace(new RegExp(e.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi'), zh)
   }
 
+  return applyTerms(text)
+}
+
+/** 术语表替换 + 空白归一。从 translateQuestion 抽出来，好让 localizeMarketTitle 复用。 */
+function applyTerms(text: string): string {
   for (const [re, to] of TERMS) text = text.replace(re, to)
   return text.replace(/\s+/g, ' ').trim()
+}
+
+/**
+ * 队名匹配表：一份**精确**（大小写不敏感的原文）、一份**归一化**（strip 掉 CF/FC 等前后缀）。
+ *
+ * 两级匹配，和 lookupTeam 一个口径：先精确、后归一化。这很重要 ——
+ *  - 归一化是「Real Madrid」对上词典键「Real Madrid CF」的关键（否则常见球队永远译不出）；
+ *  - 但归一化会把「FC Barcelona」和「Barcelona SC（厄瓜多尔）」都压成 barcelona 撞车，
+ *    所以标题里写全的「FC Barcelona」要先走精确匹配拿到对的那支，撞车只在没有精确写法时才发生。
+ *
+ * 都用 **first-wins**，且覆盖层（ovTeams）先加、基准后加 —— 覆盖优先，同 lookupTeam。
+ * 覆盖层条目数变了就重建（生产环境没有覆盖层）。
+ */
+let teamMapCache: { size: number; exact: Map<string, string>; norm: Map<string, string> } | null = null
+function teamMaps() {
+  const size = Object.keys(ovTeams).length
+  if (teamMapCache && teamMapCache.size === size) return teamMapCache
+  const exact = new Map<string, string>()
+  const norm = new Map<string, string>()
+  const add = (en: string, zh: string) => {
+    if (!en || !zh || en === zh) return
+    const lc = en.toLowerCase()
+    if (!exact.has(lc)) exact.set(lc, zh)
+    const nk = normalizeTeamKey(en)
+    if (!norm.has(nk)) norm.set(nk, zh)
+  }
+  for (const [en, zh] of Object.entries(ovTeams)) add(en, zh)
+  for (const [en, zh] of Object.entries(BASE_TEAMS)) add(en, zh)
+  teamMapCache = { size, exact, norm }
+  return teamMapCache
+}
+
+/** 一个候选串是不是已知队名，是则给中文（先精确后归一化），否则 null */
+function tryTeam(cand: string): string | null {
+  const c = cand.trim()
+  if (!c) return null
+  const { exact, norm } = teamMaps()
+  return exact.get(c.toLowerCase()) ?? norm.get(normalizeTeamKey(c)) ?? null
+}
+
+/** 一段（不含分隔符）里最长的球队词组换成中文，其余原样 */
+function translateFragmentTeams(frag: string): string {
+  const lead = frag.match(/^\s*/)?.[0] ?? ''
+  const trail = frag.match(/\s*$/)?.[0] ?? ''
+  const core = frag.trim()
+  if (!core) return frag
+  const words = core.split(/\s+/)
+  // 词组从长到短、从左到右试：优先命中「Real Madrid」而不是先啃到某个单词
+  for (let len = words.length; len >= 1; len--) {
+    for (let start = 0; start + len <= words.length; start++) {
+      const zh = tryTeam(words.slice(start, start + len).join(' '))
+      if (!zh) continue
+      const before = words.slice(0, start).join(' ')
+      const after = words.slice(start + len).join(' ')
+      return lead + [before, zh, after].filter(Boolean).join(' ') + trail
+    }
+  }
+  return frag
+}
+
+/**
+ * 把标题里的球队名换成中文（不依赖「主队 vs 客队」的固定结构）。
+ *
+ * 先按 vs / 冒号 / 破折号 / 斜杠 / 括号切成小段（这些位置不会横跨一个队名），每段再做
+ * 归一化的最长词组匹配 —— 「联赛：主队 vs 客队 - 盘口」里的两个队名都能单独认出来。
+ */
+function scanTeams(text: string): string {
+  const DELIM = /(\s+vs\.?\s+|[:：/()]|\s[-–—]\s)/gi
+  return text
+    .split(DELIM)
+    .map((part) => (/^(\s+vs\.?\s+|[:：/()]|\s[-–—]\s)$/i.test(part) ? part : translateFragmentTeams(part)))
+    .join('')
+}
+
+/**
+ * 盘口标题的展示化，给「我的订单」列表和导出用（data-api 的 `title` 只有英文）。
+ *
+ * **只处理含「vs」的对阵盘**：足球盘口标题都是「主队 vs 客队 [- 盘口]」的形状，vs 是可靠的
+ * 足球信号。含 vs 时按 vs / 冒号 / 破折号切段、每段做归一化的最长队名匹配（scanTeams），再套
+ * 术语表与标点归一（applyTerms）。
+ *
+ * 不含 vs 的（政治、选举这类「Will X win …」）**原样返回**：那些没有对阵结构，硬扫队名会把
+ * 「Seoul」这种词误当球队译掉、还被术语表切掉引导词 Will，读成半截残句 —— 宁可不译，不能译错。
+ */
+export function localizeMarketTitle(title: string | null | undefined): string {
+  const s = (title ?? '').trim()
+  if (!s || getLang() === 'en') return s
+  if (!/\svs\.?\s/i.test(s)) return s
+  return applyTerms(scanTeams(s))
+}
+
+/**
+ * 从 data-api 的盘口标题里拆出「比赛（谁对谁）」和「盘口后缀」两部分（**原文**，不翻译）。
+ *
+ * data-api 标题形如「[联赛：]主队 vs 客队[ - 盘口]」。以 vs 为锚：
+ *  - 盘口后缀 = vs 之后第一个「 - / – / — 」（其次「: 」）之后的部分；胜平负盘没有后缀。
+ *  - 比赛 = 前半段去掉 vs 之前的联赛前缀「Xxx: 」。
+ *
+ * 没有 vs 的（政治、是非盘等）整条当作「比赛」、盘口后缀为空 —— 由 localizeMarketType 按结果
+ * 兜底成「是非 / 胜平负」。分组就按这里的 match 原文做键（与语言无关）。
+ */
+export function splitMatchMarket(title: string | null | undefined): { match: string; market: string } {
+  const t = (title ?? '').trim()
+  if (!t) return { match: '', market: '' }
+  const vs = t.search(/\svs\.?\s/i)
+  if (vs < 0) return { match: t, market: '' }
+  let sep = -1
+  const dash = t.slice(vs).search(/\s[-–—]\s/)
+  if (dash >= 0) sep = vs + dash
+  else {
+    const colon = t.slice(vs).search(/\s*[:：]\s/)
+    if (colon >= 0) sep = vs + colon
+  }
+  let matchPart = sep >= 0 ? t.slice(0, sep) : t
+  const market = sep >= 0 ? t.slice(sep).replace(/^\s*[-–—:：]\s*/, '').trim() : ''
+  // 去掉 vs 之前的联赛前缀「Xxx: 」
+  const pc = matchPart.search(/[:：]\s/)
+  const vm = matchPart.search(/\svs\.?\s/i)
+  if (pc >= 0 && pc < vm) matchPart = matchPart.slice(pc + 1)
+  return { match: matchPart.trim(), market }
+}
+
+/**
+ * 盘口类型的中文化（不含「选择」那一侧，那是 localizeOutcome 的事）。
+ *
+ * 有后缀就翻后缀（总进球 / 让球 / 双方进球…，走术语表；后缀里带队名也一并扫），没有后缀就按
+ * 结果兜底：Yes/No → 是非，其余（队名 / 平局）→ 胜平负。英文模式给英文（后缀原样 / Match Result）。
+ */
+export function localizeMarketType(rawMarket: string | null | undefined, outcome: string | null | undefined): string {
+  const m = (rawMarket ?? '').trim()
+  const en = getLang() === 'en'
+  if (m) return en ? m : applyTerms(scanTeams(m))
+  const o = (outcome ?? '').trim().toLowerCase()
+  if (o === 'yes' || o === 'no') return en ? 'Yes / No' : '是非'
+  return en ? 'Match Result' : '胜平负'
+}
+
+/** Polymarket 足球盘口玩法 → 中英名（sportsMarketType 见 gamma 返回的枚举） */
+const SPORTS_MARKET: Record<string, [string, string]> = {
+  moneyline: ['胜平负', 'Match Result'],
+  spreads: ['让球', 'Handicap'],
+  totals: ['总进球', 'Total Goals'],
+  both_teams_to_score: ['双方进球', 'Both Teams to Score'],
+  both_teams_to_score_first_half: ['上半场双方进球', 'BTTS · 1st Half'],
+  both_teams_to_score_second_half: ['下半场双方进球', 'BTTS · 2nd Half'],
+  soccer_halftime_result: ['半场胜平负', 'Halftime Result'],
+  soccer_second_half_result: ['下半场胜平负', 'Second Half Result'],
+  soccer_exact_score: ['准确比分', 'Exact Score'],
+  soccer_first_to_score: ['首先进球', 'First to Score'],
+  first_half_totals: ['上半场进球', '1st Half Goals'],
+  second_half_totals: ['下半场进球', '2nd Half Goals'],
+  soccer_team_totals: ['球队进球', 'Team Goals'],
+  soccer_first_half_team_totals: ['上半场球队进球', '1st Half Team Goals'],
+  soccer_second_half_team_totals: ['下半场球队进球', '2nd Half Team Goals'],
+  total_corners: ['总角球', 'Total Corners'],
+  soccer_first_half_total_corners: ['上半场角球', '1st Half Corners'],
+  soccer_second_half_total_corners: ['下半场角球', '2nd Half Corners'],
+  soccer_team_total_corners: ['球队角球', 'Team Corners'],
+  soccer_game_corners_odd_even: ['角球单双', 'Corners Odd/Even'],
+  soccer_first_corner: ['首个角球', 'First Corner'],
+}
+
+/**
+ * 盘口玩法的中文化，优先用 Gamma 的 sportsMarketType（可靠），没有再退到翻译赛事标题后缀，
+ * 都没有就按 moneyline 兜底（胜平负）。
+ */
+export function localizeSportsMarket(sportsType: string | null | undefined, suffix: string | null | undefined): string {
+  const en = getLang() === 'en'
+  const hit = SPORTS_MARKET[(sportsType ?? '').trim()]
+  if (hit) return en ? hit[1] : hit[0]
+  const s = (suffix ?? '').trim()
+  if (s) return en ? s : applyTerms(scanTeams(s))
+  return en ? 'Match Result' : '胜平负'
+}
+
+/** 去掉尾部括注，如 "Draw (A vs B)" → "Draw" */
+function stripParen(s: string): string {
+  return s.replace(/\s*[（(].*$/, '').trim()
+}
+
+/** 一个「主语」（队名 / 比分 / 平局等）的中文化：先扫队名，扫不动再按结果词表 */
+function localizeSubject(s: string | null | undefined): string {
+  const t = (s ?? '').trim()
+  if (!t || getLang() === 'en') return t
+  const z = applyTerms(scanTeams(t))
+  if (z !== t) return z
+  return localizeOutcome(t)
+}
+
+/** 玩法本身就是 Yes/No 命题（选是/否，主语不必再显示）的类型 */
+const BINARY_PROP = new Set([
+  'both_teams_to_score',
+  'both_teams_to_score_first_half',
+  'both_teams_to_score_second_half',
+  'soccer_game_corners_odd_even',
+])
+
+/**
+ * 「选择」那一侧的中文化，把 Gamma 的结果信息拼成人话。
+ *
+ *  - 大小球：Over/Under（+线值）→ 大/小 2.5
+ *  - 让球：outcome 是队名，groupItemTitle 常带线值 "Team (-1.5)" —— 用它
+ *  - Yes/No 命题（双方进球、角球单双…）→ 是/否
+ *  - 其余 Yes/No（胜平负、半场、准确比分、首先进球…）→ 主语（队名/比分），持 No 的加「否：」前缀
+ *  - 兜底：直接把 outcome 当结果词译
+ */
+export function localizePick(o: {
+  outcome?: string | null
+  groupItemTitle?: string | null
+  line?: number | null
+  sportsType?: string | null
+}): string {
+  const en = getLang() === 'en'
+  const oc = (o.outcome ?? '').trim()
+  const ocl = oc.toLowerCase()
+  const lineStr = o.line != null && Number.isFinite(o.line) ? ` ${o.line}` : ''
+  if (ocl === 'over') return en ? `Over${lineStr}` : `大${lineStr}`
+  if (ocl === 'under') return en ? `Under${lineStr}` : `小${lineStr}`
+  if ((o.sportsType ?? '') === 'spreads') {
+    // 让球是两支球队各持一侧：groupItemTitle 只标了**被让方（favorite，负让球）**，如
+    // "Germany (-1.5)"。持仓真正买的哪一侧看 outcome（就是队名）——买的是另一支时，让球要**反号**
+    // （+1.5）。之前直接拿 groupItemTitle 当选择，买客队 +1.5 会被错标成主队 -1.5。
+    const git = (o.groupItemTitle ?? '').trim()
+    const favTeam = git.replace(/\s*[（(].*$/, '').trim()
+    const m = git.match(/\(\s*([-+]?\d*\.?\d+)\s*\)/)
+    const favLine = m ? Number(m[1]) : o.line == null ? null : Number(o.line)
+    const held = oc || favTeam
+    let myLine = favLine
+    if (favTeam && favLine != null && Number.isFinite(favLine)) {
+      const isFav = normalizeTeamKey(held) === normalizeTeamKey(favTeam)
+      myLine = isFav ? favLine : -favLine
+    }
+    const teamZh = localizeSubject(held) || held
+    const lineStr = myLine != null && Number.isFinite(myLine) ? ` ${myLine > 0 ? '+' : ''}${myLine}` : ''
+    return `${teamZh}${lineStr}`
+  }
+  if (ocl === 'yes' || ocl === 'no') {
+    if (BINARY_PROP.has(o.sportsType ?? '')) return en ? (ocl === 'yes' ? 'Yes' : 'No') : ocl === 'yes' ? '是' : '否'
+    const subj = localizeSubject(stripParen(o.groupItemTitle ?? ''))
+    if (!subj) return en ? (ocl === 'yes' ? 'Yes' : 'No') : ocl === 'yes' ? '是' : '否'
+    if (ocl === 'no') return en ? `No: ${subj}` : `否：${subj}`
+    return subj
+  }
+  return localizeSubject(oc) || localizeOutcome(oc)
+}
+
+/**
+ * 单个结果（买/持有的那一侧）的展示化。
+ *
+ * data-api 的 `outcome` 是英文：胜平负盘是**队名**（走 translateTeam），大小球是
+ * Over/Under（可能带比分线，如 "Over 2.5"），是非盘是 Yes/No。队名以外的几种在
+ * translateQuestion 的 TERMS 里没有**独立**词条（那边只认 "O/U 2.5" 这种组合），
+ * 所以在这里单独列出来。英文模式原样返回。
+ */
+export function localizeOutcome(outcome: string | null | undefined): string {
+  const s = (outcome ?? '').trim()
+  if (!s || getLang() === 'en') return s
+  const lower = s.toLowerCase()
+  if (lower === 'yes') return '是'
+  if (lower === 'no') return '否'
+  if (lower === 'draw' || lower === 'tie') return '平局'
+  const over = s.match(/^over\s*([\d.]+)?$/i)
+  if (over) return over[1] ? `大 ${over[1]}` : '大球'
+  const under = s.match(/^under\s*([\d.]+)?$/i)
+  if (under) return under[1] ? `小 ${under[1]}` : '小球'
+  // 剩下的多半是队名（胜平负盘的选项就是队名本身）
+  return translateTeam(s)
 }
 
 /**

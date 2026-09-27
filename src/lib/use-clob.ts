@@ -26,6 +26,7 @@ import {
   fetchApprovalState,
   fetchBook,
   fetchFeeRates,
+  getReadClient,
   getSecureClient,
   listOpenOrders,
   placeOrder,
@@ -34,6 +35,7 @@ import {
   type OpenOrderRow,
   type PlaceOutcome,
   type PlaceRequest,
+  type SecureClientRequest,
 } from './clob-client'
 
 // 代理地址的读法搬去了 lib/use-wallet.ts（那边不引 SDK，主包能用）。
@@ -248,32 +250,37 @@ function useSecureClient() {
     return { ready: true }
   }, [isConnected, address, chainId, walletClient, lang]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // get() 惰性建已认证客户端：首次会让用户签名（派生 L2 凭据；按需免 gas 部署
-  // Deposit Wallet / 设授权），之后缓存在模块级 Map 里。
-  const get = useCallback(async () => {
+  // 判定只有这一处，下面两个 getter 共用。
+  const request = useCallback((): SecureClientRequest => {
     if (!readiness.ready) throw new Error(readiness.reason)
-    return getSecureClient({ eoa: address as string, walletClient: walletClient as WalletClient })
+    return { eoa: address as string, walletClient: walletClient as WalletClient }
   }, [readiness, address, walletClient])
 
-  return { readiness, get }
+  // get() 惰性建已认证客户端：首次会让用户签名（派生 L2 凭据；按需免 gas 部署
+  // Deposit Wallet / 设授权），之后缓存在模块级 Map 里。
+  const get = useCallback(async () => getSecureClient(request()), [request])
+  /** 查挂单 / 撤单用的那一份（不带 builder 头，复用 get() 的凭据），见 clob-client 的 getReadClient */
+  const getRead = useCallback(async () => getReadClient(request()), [request])
+
+  return { readiness, get, getRead }
 }
 
 /**
  * 下单入口。
  */
 export function useClob() {
-  const { readiness, get } = useSecureClient()
+  const { readiness, get, getRead } = useSecureClient()
 
   const submit = useCallback(
     async (req: PlaceRequest): Promise<PlaceOutcome> => placeOrder(await get(), req),
     [get],
   )
 
-  const listMine = useCallback(async (): Promise<OpenOrderRow[]> => listOpenOrders(await get()), [get])
+  const listMine = useCallback(async (): Promise<OpenOrderRow[]> => listOpenOrders(await getRead()), [getRead])
 
   const cancel = useCallback(
-    async (orderId: string): Promise<string> => cancelOrderById(await get(), orderId),
-    [get],
+    async (orderId: string): Promise<string> => cancelOrderById(await getRead(), orderId),
+    [getRead],
   )
 
   return { readiness, submit, listMine, cancel }

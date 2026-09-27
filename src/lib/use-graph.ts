@@ -12,13 +12,16 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import {
   GammaError,
+  buildPositionMarketIndex,
   clobTokenIdsOf,
+  fetchEventsByIds,
   fetchMatchMarkets,
   fetchMatchesByIds,
   fetchSoccerEvents,
   mergeIntoMatches,
   tickOf,
   toGraphMarketInput,
+  type PositionMarketInfo,
   type SoccerMatch,
 } from './gamma'
 import { applyLivePrices, buildMarketGraph, type GraphEventInput } from '../graph/graph'
@@ -100,6 +103,26 @@ export function usePositionMatches(eventIds: ReadonlySet<string>): SoccerMatch[]
     staleTime: 5 * 60 * 1000,
   })
   return q.data ?? EMPTY_MATCHES
+}
+
+const EMPTY_MARKET_INDEX = new Map<string, PositionMarketInfo>()
+
+/**
+ * tokenId → 盘口信息（比赛「A vs B」/ 玩法 / 结果标签）索引，给「我的持仓」导出用。
+ *
+ * 持仓（data-api）只有 tokenId 和 Yes/No 之类的结果，**拿不到「谁对谁」** —— 那只在 Gamma
+ * 赛事标题里。这里按持仓所属的赛事 id 拉一批赛事，摊成按 token 查的索引（见 gamma
+ * buildPositionMarketIndex）。拿不到就空表，导出侧走标题兜底，不挡导出。
+ */
+export function usePositionMarketIndex(eventIds: ReadonlySet<string>): Map<string, PositionMarketInfo> {
+  const ids = useMemo(() => [...eventIds].sort(), [eventIds])
+  const q = useQuery({
+    queryKey: ['pos-market-index', ids],
+    queryFn: async () => buildPositionMarketIndex(await fetchEventsByIds(ids)),
+    enabled: ids.length > 0,
+    staleTime: 5 * 60 * 1000,
+  })
+  return q.data ?? EMPTY_MARKET_INDEX
 }
 
 export type GraphState = {

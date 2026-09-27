@@ -15,6 +15,7 @@ import { useQuery } from '@tanstack/react-query'
 import { useProxyWallet } from './use-wallet'
 import {
   EMPTY_POSITION_INDEX,
+  fetchAllTrades,
   fetchMarketPositions,
   fetchMarketTrades,
   fetchPositions,
@@ -132,3 +133,51 @@ export function useMarketOrders(
 // 模块级常量：每次渲染新建 [] 会让依赖它的 useMemo / memo 组件每轮都判为「变了」
 const EMPTY_POSITIONS: PolyPosition[] = []
 const EMPTY_TRADES: PolyTrade[] = []
+
+/**
+ * 整个账户的**持仓**与**成交明细**，给「我的订单」页（pages/orders.tsx）用。
+ *
+ * 与 `useMarketOrders` 的区别只在范围：那个按 conditionId 查单张盘口，这个不带盘口
+ * 过滤、把全账户捞回来。同样走公开 REST（免鉴权、不弹签名、**不碰 SDK**），所以这一页
+ * 能留在主包里、连钱包就能看，不必像下单弹窗那样 lazy 加载（见本模块顶部那条硬约束）。
+ *
+ * 持仓复用 `fetchPositions`，queryKey 与 usePositions 的 ['positions'] 分开：这里要的是
+ * **原始行**（按盘口分组、显示标题），而那边只暴露索引。两个查询各自缓存，互不影响。
+ *
+ * 拿不到时**如实报 error**：这一页的全部内容就是订单，读不到要说一声 —— 与画布上那个
+ * 「静默降级」的持仓标记不同（那是提示，这是主体）。
+ */
+export function useAccountOrders(enabled = true): {
+  positions: PolyPosition[]
+  trades: PolyTrade[]
+  loading: boolean
+  error: string | null
+  refresh: () => void
+} {
+  const { proxyAddr } = useProxyWallet()
+  const on = enabled && !!proxyAddr
+
+  const q = useQuery({
+    queryKey: ['account-orders', proxyAddr],
+    queryFn: async () => {
+      const user = proxyAddr as string
+      // 两趟并行：互不依赖，串起来只是把等待时间加倍
+      const [positions, trades] = await Promise.all([
+        fetchPositions(user),
+        fetchAllTrades(user),
+      ])
+      return { positions, trades }
+    },
+    enabled: on,
+    staleTime: 30_000,
+    retry: 1,
+  })
+
+  return {
+    positions: q.data?.positions ?? EMPTY_POSITIONS,
+    trades: q.data?.trades ?? EMPTY_TRADES,
+    loading: on && q.isLoading,
+    error: q.error instanceof Error ? q.error.message : null,
+    refresh: () => void q.refetch(),
+  }
+}

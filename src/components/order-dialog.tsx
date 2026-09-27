@@ -34,6 +34,7 @@ import { explainError, type OpenOrderRow, type PlaceOutcome } from '../lib/clob-
  */
 import { useMarketOrders } from '../lib/use-positions'
 import { positionKind, type PolyPosition } from '../lib/positions'
+import { PositionRow, TradeRow } from './position-views'
 import type { Quote } from '../lib/book'
 
 export type OrderSideChoice = { name: string; tokenId: string }
@@ -480,30 +481,7 @@ export function OrderDialog({
                     ) : (
                       <div className="mt-1.5 max-h-40 divide-y divide-border overflow-y-auto rounded border border-border">
                         {orders.trades.map((t) => (
-                          <div
-                            key={`${t.transactionHash}:${t.asset}:${t.timestamp}`}
-                            className="flex items-baseline justify-between gap-2 px-2 py-1.5"
-                          >
-                            <span className="min-w-0 text-[10px] text-foreground">
-                              <span
-                                className={cn(
-                                  'mr-1.5 rounded px-1 py-0.5 text-[10px] font-medium',
-                                  t.side === 'BUY'
-                                    ? 'bg-success/10 text-success'
-                                    : 'bg-error/10 text-error',
-                                )}
-                              >
-                                {t.side === 'BUY' ? tr('买', 'Buy') : tr('卖', 'Sell')}
-                              </span>
-                              <span className="text-muted-foreground">{t.outcome}</span>
-                              <span className="ml-1.5 font-mono tnum">
-                                {t.size} @ {t.price.toFixed(3)}
-                              </span>
-                            </span>
-                            <span className="shrink-0 font-mono text-[10px] text-muted-foreground">
-                              {formatTradeTime(t.timestamp)}
-                            </span>
-                          </div>
+                          <TradeRow key={`${t.transactionHash}:${t.asset}:${t.timestamp}`} t={t} />
                         ))}
                       </div>
                     ))}
@@ -614,62 +592,4 @@ export function OrderDialog({
     </div>,
     document.body,
   )
-}
-
-/**
- * 一条仓位。
- *
- * 显示的是**这一侧**的仓位 —— 一张盘口两侧（Over/Under）各有自己的 token，两侧都可能
- * 有仓位，所以 `outcome` 必须显示出来，否则两行长得一样分不清是哪边。
- *
- * 盈亏按方向着色，`settled` 时取**已实现**盈亏而不是浮动盈亏：仓位已经不在场上了，
- * 浮动盈亏对它没有意义（结算后 curPrice 会被推到 0 或 1，拿它算出来的浮盈是假的）。
- */
-function PositionRow({ p, settled }: { p: PolyPosition; settled?: boolean }) {
-  const pnl = settled ? p.realizedPnl : p.cashPnl
-  return (
-    <div className="rounded border border-border bg-background px-2 py-1.5">
-      <div className="flex items-baseline justify-between gap-2">
-        <span className="min-w-0 truncate text-[11px] text-foreground">
-          {settled && (
-            <span className="mr-1.5 rounded bg-muted px-1 py-0.5 text-[10px] text-muted-foreground">
-              {p.redeemable ? tr('已结算', 'Settled') : tr('已平仓', 'Exited')}
-            </span>
-          )}
-          <span className="font-medium">{p.outcome || '—'}</span>
-          <span className="ml-1.5 font-mono tnum text-muted-foreground">{p.size} {tr('份', 'shares')}</span>
-        </span>
-        <span
-          className={cn(
-            'shrink-0 font-mono tnum text-[11px] font-semibold',
-            pnl > 0 ? 'text-success' : pnl < 0 ? 'text-error' : 'text-muted-foreground',
-          )}
-        >
-          {pnl >= 0 ? '+' : '−'}${Math.abs(pnl).toFixed(2)}
-        </span>
-      </div>
-      <p className="mt-0.5 font-mono text-[10px] tnum text-muted-foreground">
-        {tr('均价', 'Avg')} {p.avgPrice.toFixed(3)}
-        {!settled &&
-          tr(
-            ` · 现价 ${p.curPrice.toFixed(3)} · 市值 $${p.currentValue.toFixed(2)}`,
-            ` · Now ${p.curPrice.toFixed(3)} · Value $${p.currentValue.toFixed(2)}`,
-          )}
-        {!settled && p.percentPnl !== 0 && ` · ${p.percentPnl > 0 ? '+' : '−'}${Math.abs(p.percentPnl).toFixed(1)}%`}
-      </p>
-    </div>
-  )
-}
-
-/**
- * 成交时间。
- *
- * ⚠️ data-api 的 `timestamp` 是**秒**，不是毫秒 —— 直接喂 `new Date()` 会得到 1970 年。
- * 只显示到分钟：秒对「我什么时候买的」没有意义。
- */
-function formatTradeTime(sec: number): string {
-  if (!Number.isFinite(sec) || sec <= 0) return '—'
-  const d = new Date(sec * 1000)
-  const p = (n: number) => String(n).padStart(2, '0')
-  return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
 }

@@ -12,7 +12,12 @@ import {
   BASE_LEAGUES,
   BASE_TEAMS,
   leagueCodeFromImage,
+  localizeMarketTitle,
+  localizeMarketType,
+  localizeOutcome,
+  localizePick,
   normalizeTeamKey,
+  splitMatchMarket,
   translateLeague,
   translateQuestion,
   translateTeam,
@@ -154,4 +159,76 @@ test('问句：标点归一，不留中英混排', () => {
 test('问句空值安全', () => {
   assert.equal(translateQuestion(null), '')
   assert.equal(translateQuestion(''), '')
+})
+
+test('结果中文化：是非 / 大小 / 平局', () => {
+  assert.equal(localizeOutcome('Yes'), '是')
+  assert.equal(localizeOutcome('No'), '否')
+  assert.equal(localizeOutcome('Draw'), '平局')
+  // 大小球可能带比分线，也可能是裸的
+  assert.equal(localizeOutcome('Over 2.5'), '大 2.5')
+  assert.equal(localizeOutcome('Under'), '小球')
+  // 队名：胜平负盘的选项就是队名本身，走 translateTeam
+  assert.equal(localizeOutcome('Everton FC'), '埃弗顿')
+  // 空值安全
+  assert.equal(localizeOutcome(null), '')
+  assert.equal(localizeOutcome(''), '')
+})
+
+test('标题中文化：vs 盘换队名，非 vs 盘原样', () => {
+  const t = localizeMarketTitle('Everton FC vs. FC Barcelona')
+  assert.ok(t.includes('埃弗顿'), t)
+  assert.ok(t.includes('巴塞罗那'), t)
+  // 没有 vs 的（政治/选举等）没有译法，原样返回好过套模板切碎
+  const keep = 'Will Mark Carney be the next Canadian Prime Minister?'
+  assert.equal(localizeMarketTitle(keep), keep)
+  assert.equal(localizeMarketTitle(''), '')
+})
+
+test('标题中文化：带联赛前缀的对阵盘，两队都译', () => {
+  // 冒号前缀 + 客队带盘口后缀：分段后归一化匹配，两队都能认出来
+  const t = localizeMarketTitle('La Liga: Everton FC vs. FC Barcelona - Total Goals')
+  assert.ok(t.includes('埃弗顿'), t)
+  assert.ok(t.includes('巴塞罗那'), t)
+  assert.ok(t.includes('总进球'), t)
+})
+
+test('标题中文化：无 vs 的非对阵盘原样返回，不误译不切碎', () => {
+  // 政治盘没有对阵结构：不扫队名（免得把 Seoul 之类误当球队）、不套术语表（免得切掉 Will）
+  const keep = 'Will Oh Se-hoon win the 2026 Seoul Mayoral Election'
+  assert.equal(localizeMarketTitle(keep), keep)
+})
+
+test('拆分比赛与盘口后缀', () => {
+  assert.deepEqual(splitMatchMarket('Everton FC vs. FC Barcelona'), { match: 'Everton FC vs. FC Barcelona', market: '' })
+  assert.deepEqual(splitMatchMarket('Everton FC vs. FC Barcelona - Total Goals'), {
+    match: 'Everton FC vs. FC Barcelona',
+    market: 'Total Goals',
+  })
+  // 去掉 vs 之前的联赛前缀
+  assert.deepEqual(splitMatchMarket('Champions League: Real Madrid vs. Manchester United - Total Goals'), {
+    match: 'Real Madrid vs. Manchester United',
+    market: 'Total Goals',
+  })
+  // 没有 vs：整条当比赛
+  assert.deepEqual(splitMatchMarket('Will X win?'), { match: 'Will X win?', market: '' })
+})
+
+test('盘口类型中文化：有后缀翻后缀，无后缀按结果兜底', () => {
+  assert.equal(localizeMarketType('Total Goals', 'Over 2.5'), '总进球')
+  assert.equal(localizeMarketType('', 'Everton FC'), '胜平负')
+  assert.equal(localizeMarketType('', 'Draw'), '胜平负')
+  assert.equal(localizeMarketType('', 'No'), '是非')
+  assert.equal(localizeMarketType('', 'Yes'), '是非')
+})
+
+test('让球：买哪一侧决定让球正负（不能照抄 groupItemTitle）', () => {
+  // groupItemTitle 只标 favorite（Germany -1.5）。买的是 Greece，应是 +1.5，且是希腊不是德国
+  const greece = localizePick({ outcome: 'Greece', groupItemTitle: 'Germany (-1.5)', line: -1.5, sportsType: 'spreads' })
+  assert.ok(greece.includes('+1.5'), greece)
+  assert.ok(!greece.includes('-1.5'), greece)
+  // 买 favorite 本身则是 -1.5
+  const germany = localizePick({ outcome: 'Germany', groupItemTitle: 'Germany (-1.5)', line: -1.5, sportsType: 'spreads' })
+  assert.ok(germany.includes('-1.5'), germany)
+  assert.notEqual(greece, germany)
 })

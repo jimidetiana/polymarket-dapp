@@ -62,6 +62,14 @@ import { cn } from './lib/utils'
 const DictAdmin = import.meta.env.DEV ? lazy(() => import('./pages/dict-admin')) : null
 const TestGraph = lazy(() => import('./pages/test-graph').then((m) => ({ default: m.default })))
 
+/**
+ * 「我的订单」页。lazy 加载与 dict/test 一致 —— 它不常打开，没必要进主入口。
+ *
+ * 注意它**不牵 SDK**（走 lib/use-positions 的公开 REST），所以这个 chunk 很小；
+ * 做成 lazy 只是路由约定，不是为了切走那 300 kB（那是 OrderDialog 的事）。
+ */
+const OrdersPage = lazy(() => import('./pages/orders'))
+
 /** 当前 hash 路由。没上 react-router —— 只有两个页面，装路由库不值得 */
 function useHash(): string {
   const [hash, setHash] = useState(() => window.location.hash)
@@ -102,6 +110,20 @@ export default function App() {
         }
       >
         <TestGraph />
+      </Suspense>
+    )
+  }
+
+  if (hash === '#/orders') {
+    return (
+      <Suspense
+        fallback={
+          <div className="flex h-dvh items-center justify-center bg-background text-sm text-muted-foreground">
+            {tr('加载中…', 'Loading…')}
+          </div>
+        }
+      >
+        <OrdersPage />
       </Suspense>
     )
   }
@@ -273,6 +295,14 @@ function GraphPage() {
               {tr('词典', 'Dict')}
             </a>
           )}
+
+          {/* 「我的订单」入口。全环境都在 —— 查已买入的订单是正式功能，不是开发工具 */}
+          <a
+            href="#/orders"
+            className="rounded-md border border-border px-2 py-1 text-[11px] text-foreground/80 hover:bg-muted"
+          >
+            {tr('订单', 'Orders')}
+          </a>
 
           <WalletMenu />
         </div>

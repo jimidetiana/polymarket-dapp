@@ -80,6 +80,10 @@ export type PolyPosition = {
   /** 赛事 id。比赛列表的标记靠它对到 match.eventIds */
   eventId: string
   title: string
+  /** 盘口缩略图（data-api 直接给）。列表里当视觉锚点，拿不到就是空串 */
+  icon: string
+  /** 盘口截止日 YYYY-MM-DD（data-api 的 endDate）。没有就是空串 */
+  endDate: string
 }
 
 /** 一条成交 */
@@ -93,6 +97,8 @@ export type PolyTrade = {
   timestamp: number
   outcome: string
   title: string
+  /** 盘口缩略图，同 PolyPosition.icon。/trades 不一定给，拿不到就是空串 */
+  icon: string
   transactionHash: string
 }
 
@@ -247,6 +253,8 @@ function toPosition(raw: unknown): PolyPosition | null {
     outcome: o.outcome == null ? '' : String(o.outcome),
     eventId: o.eventId == null ? '' : String(o.eventId),
     title: o.title == null ? '' : String(o.title),
+    icon: o.icon == null ? '' : String(o.icon),
+    endDate: o.endDate == null ? '' : String(o.endDate),
   }
 }
 
@@ -263,6 +271,7 @@ function toTrade(raw: unknown): PolyTrade | null {
     timestamp: num(o.timestamp),
     outcome: o.outcome == null ? '' : String(o.outcome),
     title: o.title == null ? '' : String(o.title),
+    icon: o.icon == null ? '' : String(o.icon),
     transactionHash: o.transactionHash == null ? '' : String(o.transactionHash),
   }
 }
@@ -353,5 +362,40 @@ export async function fetchMarketTrades(user: string, conditionId: string): Prom
     limit: PAGE_SIZE,
   })
   const out = rows.map(toTrade).filter((t): t is PolyTrade => t != null)
+  return out.sort((a, b) => b.timestamp - a.timestamp)
+}
+
+/**
+ * 整个账户的成交明细（不限盘口），新的在前 —— 给「我的订单」页用。
+ *
+ * 与 `fetchMarketTrades` 的唯一区别是**不带 `market=`**：那个是按盘口过滤，这里要的是
+ * 全账户。`takerOnly=false` 同样必须显式传，理由见 `fetchMarketTrades` —— 缺了它，
+ * 用户作为 maker 成交的那些单（下单面板引导挂的限价单正是这种）在页面上一条都查不到。
+ *
+ * `user` 必须是**代理钱包地址**（见 `fetchPositions` 顶部）。翻页与去重的兜底逻辑同
+ * `fetchPositions`：接口不认 offset 时每页返回同一批，`seen` 去重后 `added===0` 让循环停下。
+ */
+export async function fetchAllTrades(user: string): Promise<PolyTrade[]> {
+  const out: PolyTrade[] = []
+  const seen = new Set<string>()
+  for (let page = 0; page < MAX_PAGES; page++) {
+    const rows = await get('/trades', {
+      user,
+      takerOnly: 'false',
+      limit: PAGE_SIZE,
+      offset: page * PAGE_SIZE,
+    })
+    let added = 0
+    for (const raw of rows) {
+      const t = toTrade(raw)
+      if (!t) continue
+      const key = `${t.transactionHash}:${t.asset}:${t.timestamp}`
+      if (seen.has(key)) continue
+      seen.add(key)
+      out.push(t)
+      added++
+    }
+    if (rows.length < PAGE_SIZE || added === 0) break
+  }
   return out.sort((a, b) => b.timestamp - a.timestamp)
 }
