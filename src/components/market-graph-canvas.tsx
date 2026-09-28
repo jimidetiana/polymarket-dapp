@@ -137,7 +137,7 @@ interface Props {
    * 两者都表现为没有角标（见 lib/use-positions.ts）。
    *
    * 角标分两种（见 slotPositionMark）：命中槽位显示的那一侧是绿/灰角标；持在同一张盘
-   * 的**另一侧**（Under、No 这些模板里没有槽位的侧）借对面槽位标出来，用琥珀色区分。
+   * 的**另一侧**（Under、No 这些模板里没有槽位的侧）借对面槽位标出来，用红色区分。
    */
   positions?: PositionIndex
 }
@@ -508,7 +508,7 @@ export function MarketGraphCanvas({
                   在 scale(nodeScale) 组内，跟着节点一起缩，不必写第二份小屏尺寸。
 
                   ## 颜色编「哪一侧」
-                  绿/灰 = 持在本槽显示的这一侧（绿=持仓中、灰=已完结）；琥珀 = 持在同一张盘
+                  绿/灰 = 持在本槽显示的这一侧（绿=持仓中、灰=已完结）；红 = 持在同一张盘
                   的另一侧（那一侧图上没有自己的槽位，见 slotPositionMark）。字仍是 持/结，
                   开平/完结靠字区分，颜色专门让出来编「侧」。
                 */}
@@ -526,7 +526,7 @@ export function MarketGraphCanvas({
                       r={20}
                       fill={
                         mark && !mark.ownSide
-                          ? 'var(--pm-state-warning)'
+                          ? 'var(--pm-state-error)'
                           : posKind === 'open'
                             ? 'var(--pm-state-success)'
                             : 'var(--pm-neutral-500)'
@@ -800,11 +800,11 @@ function SlotTooltip({
         <div
           className={cn(
             'mt-2 rounded border p-2',
-            otherSide ? 'border-warning/40 bg-warning/5' : 'border-primary/30 bg-primary/5',
+            otherSide ? 'border-error/40 bg-error/5' : 'border-primary/30 bg-primary/5',
           )}
         >
           {otherSide && (
-            <p className="mb-1 text-[10px] leading-snug text-warning">
+            <p className="mb-1 text-[10px] leading-snug text-error">
               {tr(
                 `反向持仓：你持有的是本盘另一侧「${position.outcome}」，图上没有它的单独槽位，借这里标出。`,
                 `Opposite side: you hold "${position.outcome}" of this market, which has no slot of its own on the graph, so it's marked here.`,
@@ -815,7 +815,7 @@ function SlotTooltip({
             <span
               className={cn(
                 'text-[10px] font-semibold',
-                otherSide ? 'text-warning' : 'text-primary',
+                otherSide ? 'text-error' : 'text-primary',
               )}
             >
               {positionKind(position) === 'open' ? tr('持仓中', 'Open') : tr('已完结', 'Closed')} · {position.outcome}
