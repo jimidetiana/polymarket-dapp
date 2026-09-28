@@ -10,7 +10,8 @@
     "test": "vitest run",
     "lint": "oxlint",
     "preview": "npm run build && wrangler dev",
-    "deploy": "npm run build && wrangler deploy"
+    "deploy": "npm run build && wrangler deploy",
+    "discord": "node --env-file-if-exists=.env scripts/discord/sync.mjs"
   },
   "dependencies": {
     "@polymarket/client": "0.10.0",

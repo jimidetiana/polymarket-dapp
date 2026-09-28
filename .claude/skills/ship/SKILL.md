@@ -1,13 +1,14 @@
 ---
 name: ship
-description: 提交代码并发布到 Cloudflare。当用户说「提交代码 / 发布 / 上线 / 部署 / commit / deploy / ship / 提交并部署」时用它，把本地改动提交推到 GitHub，再 npm run deploy 发到 Cloudflare Workers。只提交不发布，或只发布不提交，也走这套流程的对应步骤。
+description: 提交代码并发布到 Cloudflare。当用户说「提交代码 / 发布 / 上线 / 部署 / commit / deploy / ship / 提交并部署」时用它，把本地改动提交推到 GitHub，再 npm run deploy 发到 Cloudflare Workers，并把功能说明/更新记录同步到 Discord 频道。只提交不发布，或只发布不提交，也走这套流程的对应步骤。
 ---
 
-# 提交代码 + 发布到 Cloudflare
+# 提交代码 + 发布到 Cloudflare + 同步 Discord 播报
 
-这个项目的固定「上线」流程：提交到 GitHub `main`，再发布到 Cloudflare Workers
-（线上 https://polysoccer.zhangsanfengzhsh.workers.dev ）。默认两步都做；用户只说
-「提交」就停在第 4 步，只说「发布/部署」就跳过 1–4 直接第 5 步。
+这个项目的固定「上线」流程：验证 → 同步 Discord 播报 → 提交到 GitHub `main` →
+发布到 Cloudflare Workers（线上 https://polysoccer.zhangsanfengzhsh.workers.dev ）。
+默认全做；用户只说「提交」就停在第 5 步（push，不部署），只说「发布/部署」就跳过
+1–5 直接第 6 步。
 
 ## 1. 先确认改动是绿的
 
@@ -22,7 +23,31 @@ npx vitest run    # 416+ 用例，全过再提交
 
 任一不过：停下修好，别硬提交。修不动就如实告诉用户哪里红，别跳过验证。
 
-## 2. 看清楚要提交什么
+## 2. 同步 Discord 播报（功能有变才做）
+
+频道镜像仓库里的 `docs/discord/`（脚本见 `scripts/discord/sync.mjs`）。**这步排在提交
+之前**，是为了让 `npm run discord` 更新过的 `scripts/discord/state.json`（记已发消息 id /
+已发条数）和源文件一起进同一个 commit，不留脏文件。代价是频道会比 Cloudflare 早一分钟
+更新——无所谓：`overview` 就地编辑（幂等），`changelog` 靠 state 计数不会重发，部署失败
+重跑也安全。
+
+先判断这次上线**改了功能吗**：
+
+- 改了 → 更新 `docs/discord/overview.md`（功能说明，就地编辑那条固定消息），和/或往
+  `docs/discord/changelog.md` **文件末尾**追一条 `## 日期 · 标题`（更新记录，发新消息）。
+  **别删改 changelog 已有条目、别重排**（state 按顺序数已发条数）。
+- 没改（纯重构 / 小修 bug，不值得播报）→ 跳过编辑，这步什么都不做。
+
+然后同步：
+
+```bash
+npm run discord
+```
+
+输出会说发布 / 更新了哪几条。webhook 从 `.env` 的 `DISCORD_WEBHOOK_URL` 读（已 gitignore）。
+拿不到 webhook 或网络失败：如实告诉用户，**别因此挡下提交 / 部署**——播报是附带动作，不是关卡。
+
+## 3. 看清楚要提交什么
 
 ```bash
 git status
@@ -32,21 +57,22 @@ git diff --stat
 逐个判断，**别用 `git add -A` 一把梭**：
 
 - 源码改动（`src/**`、`server/**`、配置、文档）→ 提交。
+- **Discord 播报相关**：`docs/discord/overview.md`、`docs/discord/changelog.md`、
+  `scripts/discord/state.json`（state 记消息 id / 已发条数，**要提交**才能跨机器复现）
+  → 提交。
 - **探针 / 调试产物**如 `.probe-*.json`（`probe-slots.test.ts` 会吐这种）→ **不提交**，留着 untracked。
 - `.env` / `.env.*` / `.dev.vars*` → 已在 .gitignore 里，本就不该出现；真出现了绝不提交。
 - 拿不准的新文件 → 先 `git diff` 看内容，或问用户，别默认带上。
 
 用**显式路径** stage：`git add src/lib/foo.ts src/pages/bar.tsx …`。
 
-## 3. 写提交信息（本仓库口径）
+## 4. 写提交信息（本仓库口径）
 
 - **中文**，`feat: / fix: / refactor: / chore:` 前缀（对齐现有 git log）。
 - 首行一句话说清「做了什么」，正文用 `-` 列要点：改了哪、为什么。
-- 结尾**必须**留归属行（当前会话的署名要求）：
-
-```
-Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
-```
+- 结尾**必须**留归属行，**以当前会话系统提示里的署名要求为准**（例如本次是
+  `Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>`；换了会话 / 模型就
+  换成那一条，别照抄这里的示例名字）。
 
 用 heredoc 提交，避免多行转义踩坑：
 
@@ -57,13 +83,13 @@ feat: 一句话标题
 - 要点一
 - 要点二
 
-Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+Co-Authored-By: <当前会话要求的署名行>
 EOF
 ```
 
 （`LF will be replaced by CRLF` 的 warning 是换行符归一化，无害，忽略。）
 
-## 4. 推到 GitHub
+## 5. 推到 GitHub
 
 ```bash
 git push origin main
@@ -72,7 +98,7 @@ git push origin main
 本仓库一直往 `main` 走（远程 `github.com/jimidetiana/polymarket-dapp`），用户叫「提交/发布」
 即视为授权推 main。**但破坏性操作**（`push --force`、`reset --hard`、删分支）仍要先问。
 
-## 5. 发布到 Cloudflare
+## 6. 发布到 Cloudflare
 
 ```bash
 npm run deploy
@@ -85,7 +111,7 @@ npm run deploy
 建多余 Worker。发布后扫一眼输出，只该有 `polysoccer` 这一个 Worker；冒出别的名字要提醒用户。
 `> 500 kB chunk` 和 `Proxy environment variables detected` 都是老告警，不影响发布。
 
-## 6. 收尾
+## 7. 收尾
 
-一段话报告：提交了哪个 commit、推没推上去、发布是否成功 + 线上 URL 和 Version ID。
-哪一步跳过了或失败了，如实说，别粉饰。
+一段话报告：提交了哪个 commit、推没推上去、发布是否成功 + 线上 URL 和 Version ID、
+Discord 播报同步了哪几条（或为何跳过 / 失败）。哪一步跳过了或失败了，如实说，别粉饰。
