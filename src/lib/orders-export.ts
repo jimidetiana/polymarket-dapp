@@ -19,7 +19,7 @@
  * ⚠️ 时间：持仓接口没有时间戳（一个仓位是多笔成交的汇总），所以「时间」取该 token
  * **最后一笔买入**的成交时间，由调用方从成交明细算好传进来（meta.timeByAsset）。
  */
-import { tr } from './i18n'
+import { tr, zonedTimeParts } from './i18n'
 
 /**
  * 一条已**本地化好**的持仓行（比赛 / 盘口 / 选择都由调用方按当前语言译好传进来）。
@@ -106,16 +106,15 @@ export function pct(price: number): string {
 export function euroOdds(price: number): string {
   return price > 0 ? (1 / price).toFixed(2) : '—'
 }
-/** 秒级时间戳 → "YYYY-MM-DD HH:mm"；无效返回 "—" */
-function timeText(sec: number | undefined): string {
+/** 秒级时间戳 → "YYYY-MM-DD HH:mm"（按界面语言的时区，见 i18n.displayTimeZone）；无效返回 "—"。画布导出与界面持仓板复用同一口径。 */
+export function positionTimeText(sec: number | undefined): string {
   if (!sec || !Number.isFinite(sec) || sec <= 0) return '—'
-  const d = new Date(sec * 1000)
-  const p = (n: number) => String(n).padStart(2, '0')
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
+  const t = zonedTimeParts(new Date(sec * 1000))
+  return `${t.year}-${t.month}-${t.day} ${t.hour}:${t.minute}`
 }
 function nowTime(d: Date): string {
-  const p = (n: number) => String(n).padStart(2, '0')
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
+  const t = zonedTimeParts(d)
+  return `${t.year}-${t.month}-${t.day} ${t.hour}:${t.minute}`
 }
 function stamp(d: Date): string {
   const p = (n: number) => String(n).padStart(2, '0')
@@ -145,6 +144,31 @@ type Item = {
 /** 同一场比赛的一组盘口 */
 type Group = { match: string; items: Item[] }
 
+/** 一组同场比赛的行（泛型：画布用格式化后的 Item，界面持仓板用原始 ExportRow）。 */
+export type MatchGroup<T> = { match: string; items: T[] }
+
+/**
+ * 按「比赛（谁对谁）」把行分组，保持首次出现的顺序；同一场的多个盘口并到一组。
+ * 画布导出与界面持仓板共用**同一条归组规则**（键、无名场兜底名、顺序），
+ * 两处才不会各自漂移成不同的分组。
+ */
+export function groupByMatch<T>(rows: T[], getMatch: (r: T) => string): MatchGroup<T>[] {
+  const groups: MatchGroup<T>[] = []
+  const byKey = new Map<string, MatchGroup<T>>()
+  for (const r of rows) {
+    const name = getMatch(r)
+    const key = name || '—'
+    let g = byKey.get(key)
+    if (!g) {
+      g = { match: name || tr('未知比赛', 'Unknown match'), items: [] }
+      byKey.set(key, g)
+      groups.push(g)
+    }
+    g.items.push(r)
+  }
+  return groups
+}
+
 const HEAD_H = 76
 const TABLE_HEAD_H = 30
 const MATCH_H = 38
@@ -163,27 +187,20 @@ export async function exportPositionsImage(
   const now = meta.now ?? new Date()
 
   // 按「比赛（谁对谁）」分组：同一场的多个盘口并到一组，比赛名只在组头显示一次。
-  const groups: Group[] = []
-  const byKey = new Map<string, Group>()
-  for (const r of rows) {
-    const key = r.match || '—'
-    let g = byKey.get(key)
-    if (!g) {
-      g = { match: r.match || tr('未知比赛', 'Unknown match'), items: [] }
-      byKey.set(key, g)
-      groups.push(g)
-    }
-    g.items.push({
+  // 归组规则抽到 groupByMatch 与界面持仓板共用；这里只负责把每行格式化成绘制用的 Item。
+  const groups: Group[] = groupByMatch(rows, (r) => r.match).map((g) => ({
+    match: g.match,
+    items: g.items.map((r) => ({
       market: r.market || '—',
       pick: r.pick || '—',
-      time: timeText(r.timeSec),
+      time: positionTimeText(r.timeSec),
       price: `${pct(r.avgPrice)} · ${euroOdds(r.avgPrice)}`,
       shares: trimNum(r.size),
       cost: `$${(r.size * r.avgPrice).toFixed(2)}`,
       amount: r.size * r.avgPrice,
       sizeNum: r.size,
-    })
-  }
+    })),
+  }))
 
   const totalItems = groups.reduce((s, g) => s + g.items.length, 0)
   const bodyH = groups.reduce((s, g) => s + MATCH_H + g.items.length * ROW_H, 0)

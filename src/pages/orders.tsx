@@ -25,6 +25,7 @@ import { usePositionMarketIndex } from '../lib/use-graph'
 import { positionKind, type PolyPosition } from '../lib/positions'
 import { localizeMarketTitle, localizeMarketType, localizeOutcome, localizePick, localizeSportsMarket, splitMatchMarket } from '../lib/dict'
 import { PositionRow, TradeRow } from '../components/position-views'
+import { PositionsBoard } from '../components/positions-board'
 import { shortAddr } from '../components/connect-wallet'
 import { exportPositionsImage, downloadImage, type ExportRow } from '../lib/orders-export'
 import { cn } from '../lib/utils'
@@ -169,14 +170,23 @@ export default function OrdersPage() {
     }
   }
 
+  /**
+   * 持仓板要画的行：一行持仓配上它的勾选键。用与导出**同一个** toExportRow 造行，界面才和
+   * 导出图片对得上。不 memo —— toExportRow 依赖 marketIndex / timeByAsset / 当前语言，值一变
+   * 就得重算，列表本身也不长，直接算最省心（lang 变时组件已因 useLang 重渲染，会带上新译名）。
+   */
+  const boardRows = held.map((p) => ({ key: posKey(p), row: toExportRow(p) }))
+
   const connected = !!proxyAddr
   const showData = connected && !orders.error && !orders.loading
 
   return (
     <div className="min-h-dvh bg-background text-foreground">
-      {/* 顶栏：回图 + 标题 + 语言 + 刷新。独立路由没有 App 的那条顶栏，自带一个 */}
-      <header className="sticky top-0 z-10 flex items-center justify-between gap-2 border-b border-border bg-background/90 px-3 py-2.5 backdrop-blur sm:px-4">
-        <div className="flex min-w-0 items-center gap-2">
+      {/* 顶栏：回图 + 标题 + 语言 + 刷新。独立路由没有 App 的那条顶栏，自带一个。
+          栏本身铺满视口(sticky 背景连成一条),内容收到与正文同宽的 max-w-4xl 里居中,两边留白对齐。 */}
+      <header className="sticky top-0 z-10 border-b border-border bg-background/90 backdrop-blur">
+        <div className="mx-auto flex w-full max-w-4xl items-center justify-between gap-2 px-3 py-2.5 sm:px-4">
+          <div className="flex min-w-0 items-center gap-2">
           <a
             href="#/"
             className="rounded-md border border-border px-2 py-1 text-[11px] text-foreground/80 hover:bg-muted"
@@ -203,10 +213,11 @@ export default function OrdersPage() {
           >
             {orders.loading ? tr('刷新中…', 'Refreshing…') : tr('刷新', 'Refresh')}
           </button>
+          </div>
         </div>
       </header>
 
-      <main className="mx-auto w-full max-w-2xl px-3 py-4 sm:px-4">
+      <main className="mx-auto w-full max-w-4xl px-3 py-4 sm:px-6">
         {!connected ? (
           <Empty>
             {proxyLoading
@@ -270,28 +281,12 @@ export default function OrdersPage() {
               {held.length === 0 ? (
                 <Empty>{tr('还没有持仓', 'No positions yet')}</Empty>
               ) : (
-                <div className="space-y-2">
-                  {held.map((p) => {
-                    const k = posKey(p)
-                    const on = selected.has(k)
-                    return (
-                      <label
-                        key={k}
-                        className="flex cursor-pointer items-center gap-2.5"
-                      >
-                        <input
-                          type="checkbox"
-                          checked={on}
-                          onChange={() => toggleOne(k)}
-                          className="size-4 shrink-0 accent-[var(--color-primary)]"
-                        />
-                        <div className={cn('min-w-0 flex-1 rounded-xl', on && 'ring-2 ring-primary/40')}>
-                          <PositionRow p={p} showTitle />
-                        </div>
-                      </label>
-                    )
-                  })}
-                </div>
+                <PositionsBoard
+                  rows={boardRows}
+                  account={shortAddr(proxyAddr)}
+                  selected={selected}
+                  onToggle={toggleOne}
+                />
               )}
               {exportErr && (
                 <p className="mt-2 rounded-md border border-warning/30 bg-warning/10 px-2.5 py-1.5 text-[11px] text-warning">

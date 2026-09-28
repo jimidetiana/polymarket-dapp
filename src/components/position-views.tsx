@@ -17,7 +17,7 @@
  * 走紧凑单行，省纵向空间。两种都把英文结果换成中文（localizeOutcome）。
  */
 import { useState } from 'react'
-import { tr } from '../lib/i18n'
+import { tr, zonedTimeParts } from '../lib/i18n'
 import { cn } from '../lib/utils'
 import { localizeMarketTitle, localizeOutcome } from '../lib/dict'
 import type { PolyPosition, PolyTrade } from '../lib/positions'
@@ -208,11 +208,10 @@ export function TradeRow({ t, showTitle }: { t: PolyTrade; showTitle?: boolean }
  * only-export-components 告警，而它没有第二个调用点。
  *
  * ⚠️ data-api 的 `timestamp` 是**秒**，不是毫秒 —— 直接喂 `new Date()` 会得到 1970 年。
- * 只显示到分钟：秒对「我什么时候买的」没有意义。
+ * 只显示到分钟：秒对「我什么时候买的」没有意义。时区跟界面语言走（见 i18n.zonedTimeParts）。
  */
 function formatTradeTime(sec: number): string {
   if (!Number.isFinite(sec) || sec <= 0) return '—'
-  const d = new Date(sec * 1000)
-  const p = (n: number) => String(n).padStart(2, '0')
-  return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
+  const t = zonedTimeParts(new Date(sec * 1000))
+  return `${t.month}-${t.day} ${t.hour}:${t.minute}`
 }

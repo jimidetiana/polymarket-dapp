@@ -71,3 +71,49 @@ export function useLang(): Lang {
 export function tr(zh: string, en: string): string {
   return lang === 'en' ? en : zh
 }
+
+/**
+ * 显示时区，跟着当前语言走 —— 中英切换时时间也跟着换口径。
+ *
+ * 中文按北京时间（Asia/Shanghai）：站点中文优先，赛程 / 盘口 / 订单一律按北京时间看，
+ * 这是老口径（见 utils.formatKickoff 注释里那个「订单页差 8 小时」的由来）。
+ * 英文按 UTC：面向国际用户，UTC 无歧义，也不用替某个国家的本地时区做主张。
+ * 要改成别的（如美东 America/New_York），只动下面这一处 EN_TZ 即可。
+ */
+const EN_TZ = 'UTC'
+
+export function displayTimeZone(): string {
+  return lang === 'en' ? EN_TZ : 'Asia/Shanghai'
+}
+
+/** toLocaleString 用的区域格式：英文走 en-GB（24 小时制），与持仓 / 成交的时间列同口径 */
+export function displayLocale(): string {
+  return lang === 'en' ? 'en-GB' : 'zh-CN'
+}
+
+/**
+ * 把一个时刻按**当前显示时区**拆成零填充的 年/月/日/时/分 串。
+ *
+ * 持仓、成交、导出水印几处时间列各自拼格式（有的带年、有的不带），但都要「按语言时区、
+ * 24 小时制」这同一套口径，所以把这段 Intl 调用收在这里，免得各写一遍还写不齐。
+ * hourCycle 钉 'h23'：部分引擎在 hour12:false 下会把 0 点给成 "24"，h23 才稳定给 "00"。
+ */
+export function zonedTimeParts(d: Date): {
+  year: string
+  month: string
+  day: string
+  hour: string
+  minute: string
+} {
+  const parts = new Intl.DateTimeFormat('en-GB', {
+    timeZone: displayTimeZone(),
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23',
+  }).formatToParts(d)
+  const g = (t: Intl.DateTimeFormatPartTypes): string => parts.find((p) => p.type === t)?.value ?? '00'
+  return { year: g('year'), month: g('month'), day: g('day'), hour: g('hour'), minute: g('minute') }
+}
