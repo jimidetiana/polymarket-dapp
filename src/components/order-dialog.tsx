@@ -8,7 +8,7 @@
  * 「我的订单」那条改成**按需加载**：读挂单也要先建已认证客户端，
  * 而建客户端会让用户签一次名 —— 打开弹窗就弹签名没人受得了。
  */
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { useQueryClient } from '@tanstack/react-query'
 import { cn } from '../lib/utils'
@@ -127,6 +127,24 @@ export function OrderDialog({
   const [picked, setPicked] = useState<{ steps: number; timestamp: number } | null>(null)
   const [mine, setMine] = useState<OpenOrderRow[] | null>(null)
 
+  /**
+   * 成交后「多久能看到新数据」是不定的：左侧的持仓 / 成交要等 data-api 索引完，
+   * 右上角的余额要等链上结算完，两者都是**秒级且不定长**的延迟。所以**单次**重拉
+   * （哪怕隔 5 秒补一发）经常赶在索引之前 —— 重拉回来的还是下单前那份，表现正是
+   * 用户说的「下完单弹窗开着，左侧持仓 / 成交不动，非得刷新页面重开才有」。
+   *
+   * 改成下单成功后开一小段**轮询窗口**：每 3 秒重拉一次，约 30 秒后自停，覆盖住这段
+   * 延迟。定时器句柄存在 ref 里，关窗（卸载）时清掉，避免泄漏；下一笔开始前也先清掉
+   * 上一笔的，免得叠加。
+   */
+  const burstRef = useRef<{ timer?: number; stopper?: number }>({})
+  const stopRefreshBurst = useCallback(() => {
+    if (burstRef.current.timer != null) window.clearInterval(burstRef.current.timer)
+    if (burstRef.current.stopper != null) window.clearTimeout(burstRef.current.stopper)
+    burstRef.current = {}
+  }, [])
+  useEffect(() => stopRefreshBurst, [stopRefreshBurst])
+
   // Esc 关闭 + 锁背景滚动。滚轮穿透到画布上会让人以为图在动，很困惑。
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -202,19 +220,25 @@ export function OrderDialog({
       })
       setOutcome(r)
       if (r.ok) {
-        void depth.refresh()
         setMine(null) // 挂单列表已过期，下次点开重拉
-        // 本盘口的持仓/成交**立刻重拉**。它的 staleTime 是 30 秒，而这一段在弹窗里
-        // 是**开着**的 —— 不主动刷就一直是下单之前那份（多半是空的），看起来正好是
-        // 「成交了却查不到」。30 秒的缓存对「打开弹窗看一眼」是合理的，
-        // 对「刚下完单」不是。
-        orders.refresh()
-        // 成交要等 data-api 索引完才出现，紧接的那一次多半还是空的，隔几秒补一次。
-        // 只是多一次 GET，不猜索引延迟到底几秒。
-        window.setTimeout(orders.refresh, 5000)
-        // 画布与比赛列表上的持仓角标走另一个 query（usePositions 的 ['positions']），
-        // 一并作废 —— 刚成交的那张盘口应当马上出现角标。
-        void queryClient.invalidateQueries({ queryKey: ['positions'] })
+        // 持仓 / 成交 / 余额都在成交后才变，但索引与结算有秒级不定长延迟（见
+        // stopRefreshBurst 上方注释）。开一小段轮询窗口把这段延迟覆盖住 ——
+        // 单次重拉常常赶在数据可见之前。
+        stopRefreshBurst() // 上一笔可能还在轮询，先清掉再重开
+        const pull = () => {
+          void depth.refresh()
+          // 本盘口的持仓 / 成交（useMarketOrders）。它 staleTime 30 秒，而这一段在
+          // 弹窗里是开着的，不主动刷就一直停在下单之前那份。
+          orders.refresh()
+          // 可用余额走 wagmi 的 useReadContract，默认不会自己重读，同样得手动刷。
+          usdc.refresh()
+          // 画布 / 比赛列表上的持仓角标走另一个 query（usePositions 的 ['positions']），
+          // 一并作废，让刚成交的那张盘口马上出现角标。
+          void queryClient.invalidateQueries({ queryKey: ['positions'] })
+        }
+        pull() // 先立刻拉一发（少数情况下数据已就绪）
+        burstRef.current.timer = window.setInterval(pull, 3000)
+        burstRef.current.stopper = window.setTimeout(stopRefreshBurst, 30000)
       }
     } catch (e) {
       setFatal(explainError(e))

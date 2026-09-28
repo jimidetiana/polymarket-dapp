@@ -51,8 +51,14 @@ export { useProxyWallet }
  *
  * 参数类型写 `` `0x${string}` `` 而不是 string：useReadContract 的 args 要求
  * 它，传 string 会在调用点报错，而那个错看起来像「读余额写错了」。
+ *
+ * 暴露 `refresh`：wagmi 的 useReadContract 默认只在挂载/参数变时读一次，成交后
+ * 余额（链上）变了它不会自己动。下单成功后由弹窗手动调它重读 —— 否则「可用余额」
+ * 会一直停在下单之前那个数，看起来像「买了钱没扣」。
  */
-export function useCollateralBalance(proxyAddr?: `0x${string}`): { value: bigint | undefined; isLoading: boolean } {
+export function useCollateralBalance(
+  proxyAddr?: `0x${string}`,
+): { value: bigint | undefined; isLoading: boolean; refresh: () => void } {
   const q = useReadContract({
     address: PUSD_POLYGON,
     abi: erc20Abi,
@@ -60,7 +66,7 @@ export function useCollateralBalance(proxyAddr?: `0x${string}`): { value: bigint
     args: proxyAddr ? [proxyAddr] : undefined,
     query: { enabled: !!proxyAddr },
   })
-  return { value: q.data, isLoading: q.isLoading }
+  return { value: q.data, isLoading: q.isLoading, refresh: () => void q.refetch() }
 }
 
 // ── 盘口深度 ────────────────────────────────────────────
