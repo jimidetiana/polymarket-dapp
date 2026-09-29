@@ -40,7 +40,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { cn } from '@/lib/utils'
 import { formatVolume } from '@/lib/utils'
-import { formatPrice, type PriceMode } from '@/lib/odds'
+import { formatPrice, priceModeLabel, type PriceMode } from '@/lib/odds'
 import { tr, useLang } from '@/lib/i18n'
 import { PALETTES, DEFAULT_PALETTE, type TeamPaletteKey } from '@/lib/palette'
 import { positionKind, slotPositionMark, type PositionIndex, type SlotPositionMark } from '@/lib/positions'
@@ -119,6 +119,12 @@ interface Props {
   goals: GraphGoalCounts | null
   /** 价格显示口径：概率 % 或欧赔 */
   priceMode: PriceMode
+  /**
+   * 切换价格口径（概率 % ↔ 欧赔）。给了才在画布右上角画出那个按钮 ——
+   * 口径是页面的状态，画布只管把它显示出来、把点击转出去。
+   * test-graph 那种自带开关的调用方不传，按钮就不出现。
+   */
+  onTogglePriceMode?: () => void
   /** 上一轮价格，key = slot.key */
   prevPrices: Record<string, number>
   selectedKey: string | null
@@ -179,6 +185,7 @@ export function MarketGraphCanvas({
   templateEdges,
   goals,
   priceMode,
+  onTogglePriceMode,
   prevPrices,
   selectedKey,
   onSelect,
@@ -689,6 +696,26 @@ export function MarketGraphCanvas({
           {homeTeam && <TeamLegendRow color={palette.home} role={tr('主队', 'Home')} name={homeTeam} />}
           {awayTeam && <TeamLegendRow color={palette.away} role={tr('客队', 'Away')} name={awayTeam} />}
         </div>
+      )}
+
+      {/*
+        价格口径开关（概率 % ↔ 欧赔）。放画布右上角，贴着它作用的那些数字 ——
+        原来在顶栏，那里离节点上的价格隔着一整张图，「切完之后看的是哪里的数」
+        要靠记。挪过来之后按钮和价格在同一视野里。
+
+        和缩放控件一样放在容器里而不是 SVG 里：SVG 里的按钮会跟着内容一起缩放
+        平移，放大后自己就跑出画面了。
+      */}
+      {onTogglePriceMode && (
+        <button
+          type="button"
+          onClick={onTogglePriceMode}
+          // 悬浮层要自己抢回指针事件（缩放控件用的是同一个写法）：根节点在
+          // pointerdown 上处理拖拽平移，按钮上的一次点击不该被当成拖图
+          className="pointer-events-auto absolute right-3 top-3 z-40 rounded-md border border-border bg-popover/90 px-2 py-1 text-[11px] text-foreground/80 shadow-sm backdrop-blur-sm hover:bg-muted"
+        >
+          {priceModeLabel(priceMode)}
+        </button>
       )}
 
       {/*

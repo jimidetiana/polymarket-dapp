@@ -1,8 +1,15 @@
 /**
- * 常规网页布局：顶栏（品牌 + 价格模式 + 钱包）+ 左栏（比赛列表）+ 关系图。
+ * 常规网页布局：顶栏（品牌 + 钱包余额）+ 左栏（比赛列表）+ 关系图。
  *
  * 关系图仍占主位 —— 核心是那张图，交易是图上的动作，不是独立页面。
- * 变的是控制项的位置：比赛列表从顶栏挪进左栏，钱包从版面收进顶栏的浮窗。
+ * 变的是控制项的位置：比赛列表从顶栏挪进左栏，钱包从版面收进顶栏的按钮。
+ *
+ * 顶栏只留「跟画布无关」的东西（钱包余额、语言、订单）。**价格口径开关
+ * 归画布**，画在画布右上角：它换的是节点上那些数字的读法，摆在数字旁边
+ * 才看得出切完在看哪里的数。见 market-graph-canvas.tsx 里的那个按钮。
+ *
+ * 钱包那个按钮印的是**余额**而不是地址缩写 —— 地址缩写不回答任何问题
+ * （是哪个钱包、有多少钱都看不出来），点开浮窗看详情。见 connect-wallet.tsx。
  *
  * 原来比赛选择器挤在顶栏里，只能靠 max-w 截断（窄屏 150px，队名都放不下），
  * 点开还是一层盖住半张图的浮层 —— 见 match-picker.tsx 顶部。列表进左栏后
@@ -40,7 +47,7 @@ const OrderDialog = lazy(() =>
 )
 import { useSoccerMatches, useMarketGraph, usePositionMatches, TEMPLATE_EDGES } from './lib/use-graph'
 import { defaultMatchId, mergeMatchLists } from './lib/match-list'
-import { priceModeLabel, type PriceMode } from './lib/odds'
+import type { PriceMode } from './lib/odds'
 import { setLang, tr, useLang } from './lib/i18n'
 /**
  * 持仓。走公开 REST（lib/positions.ts），**不碰 SDK** —— 画布和比赛列表都在主包里，
@@ -268,14 +275,6 @@ function GraphPage() {
         </div>
 
         <div className="flex min-w-0 items-center gap-2">
-          <button
-            type="button"
-            onClick={() => setPriceMode(priceMode === 'prob' ? 'odds' : 'prob')}
-            className="rounded-md border border-border px-2 py-1 text-[11px] text-foreground/80 hover:bg-muted"
-          >
-            {priceModeLabel(priceMode)}
-          </button>
-
           {/* 语言切换。按钮上写的是「切过去之后」的语言，和常见站点一致 */}
           <button
             type="button"
@@ -418,6 +417,8 @@ function GraphPage() {
               templateEdges={TEMPLATE_EDGES}
               goals={goals}
               priceMode={priceMode}
+              // 口径开关画在画布右上角（挨着它作用的那些数字），状态仍在这层
+              onTogglePriceMode={() => setPriceMode(priceMode === 'prob' ? 'odds' : 'prob')}
               prevPrices={prevPrices}
               selectedKey={selectedKey}
               onSelect={setSelectedKey}

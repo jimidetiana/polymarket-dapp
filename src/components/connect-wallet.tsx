@@ -28,16 +28,28 @@ export function shortAddr(a?: string): string {
 }
 
 /**
- * 顶栏的钱包入口：一个按钮 +（连上之后）一层余额浮窗。
+ * 顶栏的钱包入口：一个按钮 +（连上之后）一层详情浮窗。
  *
  * ## 状态决定按钮是什么
  *
  *   未连接   → 「连接钱包」（扩展只装了一个就直接连，多个才给列表）
  *   链不对   → 「切到 Polygon 网络」
- *   已连接   → 缩写地址，点开浮窗看余额和断开
+ *   已连接   → **余额数字**，点开浮窗看地址、gas、存款入口与断开
  *
- * 余额不再常驻版面：那是一整块信息，而「看一眼余额」是低频动作。
- * 低频的收进浮窗，顶栏的位置留给高频的东西。
+ * ## 按钮上为什么不再是地址
+ *
+ * 原来是 `0x1234…abcd`。那个缩写**不回答任何问题**：地址长得都一样，
+ * 是哪个钱包、里面有多少钱，都看不出来；而「我的钱呢」正是这个按钮会被
+ * 点开的原因。余额是那个问题的答案，地址只是实现细节 —— 它留在浮窗里
+ * 给需要核对的人看（面板里本来就写着签名地址和资金地址两行）。
+ *
+ * 显示的数是**可交易余额**（代理钱包里的 pUSD）—— 下单能动用的就是这笔钱。
+ * 一个例外：代理钱包还是空的、钱还躺在签名地址上（还没走官方存款）时，
+ * 摆一个 $0.00 会让人以为读数坏了，所以改显示签名地址上的金额并在旁边标
+ * 一句「未存入」。它同时回答了「我的钱去哪了」和「我还差哪一步」。
+ *
+ * 未连接、链不对时不渲染余额 —— 那时没有可读的钱，按钮本身就在说别的
+ * 事情（连钱包 / 切网络）。
  *
  * ## 私钥不经过这里
  *
@@ -53,10 +65,17 @@ export function shortAddr(a?: string): string {
  * 只给一个切链按钮。
  */
 export function WalletMenu() {
-  const { address, isConnected, chainId } = useAccount()
+  // 不再取 address：它原来只用来在按钮上印缩写，现在按钮印的是余额，
+  // 地址挪进浮窗（由 WalletPanel 自己读）—— 留个没用到的变量会被 noUnusedLocals 拦下
+  const { isConnected, chainId } = useAccount()
   const { connectors, connect, isPending, error } = useConnect()
   const { disconnect } = useDisconnect()
   const { switchChain } = useSwitchChain()
+  /**
+   * 按钮上的那个数。与浮窗里的 WalletPanel 读的是同一组 query（key 相同，
+   * react-query 会去重），所以这一处不额外发请求。
+   */
+  const bal = useWalletBalances()
   /** 余额浮窗。没连上时没有余额可看，这个值也不会被用到 */
   const [open, setOpen] = useState(false)
 
@@ -99,15 +118,31 @@ export function WalletMenu() {
     )
   }
 
+  const inEoa = bal.eoaUsdcE.value
+  const tradable = bal.trading.value
+  // 判据写成 === 0n 而不是 falsy：加载中时 value 是 undefined，
+  // 用 !inEoa 之类的写法会先闪一下「未存入」（与 WalletPanel 同一个理由）
+  const notDeposited = tradable === 0n && inEoa != null && inEoa > 0n
+  const shown = notDeposited ? inEoa : tradable
+
   return (
     <div className="relative">
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
         aria-expanded={open}
+        title={
+          notDeposited
+            ? tr('钱还在签名地址上，还没存进代理钱包', 'Funds are still on the signer address, not deposited yet')
+            : tr('可交易余额：代理钱包里的 pUSD', 'Tradable balance: pUSD in the proxy wallet')
+        }
         className="flex items-center gap-1 rounded-md border border-border bg-input px-2 py-1 text-xs text-foreground hover:bg-muted"
       >
-        <span className="font-mono tnum">{shortAddr(address)}</span>
+        {/* 读不出来时是「—」而不是「$—」：前者是「还不知道」，后者像是「零」 */}
+        <span className="font-mono tnum">{shown == null ? '—' : `$${formatUsd(shown)}`}</span>
+        {notDeposited && (
+          <span className="shrink-0 text-[10px] text-warning">{tr('未存入', 'not deposited')}</span>
+        )}
         <span className="shrink-0 text-muted-foreground">▾</span>
       </button>
 
@@ -121,7 +156,7 @@ export function WalletMenu() {
             <WalletPanel />
 
             {/* 断开放在浮窗里而不是顶栏上：它是低频且不可轻率的动作，
-                摆在顶栏上和地址并排，很容易点错 */}
+                摆在顶栏上和余额并排，很容易点错 */}
             <button
               type="button"
               onClick={() => {
