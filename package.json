@@ -11,7 +11,8 @@
     "lint": "oxlint",
     "preview": "npm run build && wrangler dev",
     "deploy": "npm run build && wrangler deploy",
-    "discord": "node --env-file-if-exists=.env scripts/discord/sync.mjs"
+    "discord": "node --env-file-if-exists=.env scripts/discord/sync.mjs",
+    "stats": "node --env-file-if-exists=.env scripts/discord/stats.mjs"
   },
   "dependencies": {
     "@polymarket/client": "0.10.0",
