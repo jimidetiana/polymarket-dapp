@@ -24,6 +24,10 @@ dist-ssr
 .claude/worktrees/
 .claude/settings.json
 
+# 临时草稿：/team-dict 技能把「待填译名骨架」写在这里（tmp/missing.json），
+# 属于一次性的中间产物，不该进版本库。
+tmp/
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
