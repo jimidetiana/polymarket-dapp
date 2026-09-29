@@ -25,10 +25,11 @@
  * 数据链路全在浏览器里：Gamma API → 合并衍生赛事 → buildMarketGraph
  * → resolveTemplate → 画布。没有后端，没有库。
  */
-import { Suspense, lazy, useEffect, useMemo, useState } from 'react'
+import { Suspense, lazy, useCallback, useEffect, useMemo, useState } from 'react'
 import { WalletMenu } from './components/connect-wallet'
 import { MarketGraphCanvas } from './components/market-graph-canvas'
 import { MatchPicker } from './components/match-picker'
+import { HelpDialog } from './components/help-dialog'
 /**
  * 下单弹窗按需加载。
  *
@@ -179,6 +180,23 @@ function GraphPage() {
    * 状态就得跟着 resize 同步，那是为了省一次无效果的 setState 引入一处不同步。
    */
   const [navOpen, setNavOpen] = useState(false)
+  /** 操作说明弹窗。首次访问自动弹一次，之后只从顶栏「说明」按钮打开 */
+  const [helpOpen, setHelpOpen] = useState(() => {
+    try {
+      return localStorage.getItem(HELP_SEEN_KEY) == null
+    } catch {
+      return false
+    }
+  })
+  // useCallback：页面随报价频繁重渲染，引用不稳会让弹窗的 Esc/锁滚动 effect 反复拆装
+  const closeHelp = useCallback(() => {
+    setHelpOpen(false)
+    try {
+      localStorage.setItem(HELP_SEEN_KEY, '1')
+    } catch {
+      /* 存不下只是下次还会自动弹 */
+    }
+  }, [])
 
   /**
    * 首次拿到列表时自动打开**开赛时间最近的那场**。
@@ -275,6 +293,14 @@ function GraphPage() {
         </div>
 
         <div className="flex min-w-0 items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setHelpOpen(true)}
+            className="rounded-md border border-border px-2 py-1 text-[11px] text-foreground/80 hover:bg-muted"
+          >
+            {tr('说明', 'Help')}
+          </button>
+
           {/* 语言切换。按钮上写的是「切过去之后」的语言，和常见站点一致 */}
           <button
             type="button"
@@ -485,9 +511,14 @@ function GraphPage() {
           />
         </Suspense>
       )}
+
+      {helpOpen && <HelpDialog onClose={closeHelp} />}
     </div>
   )
 }
+
+/** localStorage 里记「看过说明」的键。有值就不再自动弹 */
+const HELP_SEEN_KEY = 'help-seen'
 
 /** 顶栏的汉堡图标。三条线而已，用内联 SVG 而不是再装一个图标库 */
 function MenuIcon() {
