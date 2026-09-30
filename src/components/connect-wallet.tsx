@@ -5,6 +5,7 @@ import { polygon } from 'wagmi/chains'
 import { formatPol, formatUsd } from '../lib/money'
 import { tr } from '../lib/i18n'
 import { useWalletBalances } from '../lib/use-wallet'
+import { explainConnectError, pickable } from '../lib/wallet-connect'
 import { cn } from '../lib/utils'
 
 /**
@@ -69,6 +70,7 @@ export function WalletMenu() {
   // 地址挪进浮窗（由 WalletPanel 自己读）—— 留个没用到的变量会被 noUnusedLocals 拦下
   const { isConnected, chainId } = useAccount()
   const { connectors, connect, isPending, error } = useConnect()
+  const available = useAvailableConnectors(connectors)
   const { disconnect } = useDisconnect()
   const { switchChain } = useSwitchChain()
   /**
@@ -98,7 +100,7 @@ export function WalletMenu() {
   if (!isConnected) {
     return (
       <WalletPicker
-        connectors={pickable(connectors)}
+        connectors={available}
         isPending={isPending}
         error={error}
         onPick={(c) => connect({ connector: c })}
@@ -175,130 +177,124 @@ export function WalletMenu() {
 }
 
 /**
- * 去掉重复的连接器。
- *
- * wagmi v3 默认开着 EIP-6963 发现（依赖 mipd），所以 connectors 里同时有：
- *   1. 各扩展按 6963 广播的自己（带 icon 与 rdns，名字准确）
- *   2. 我们在 wagmi.ts 里配的那个通用 injected()
- * 装了币安钱包时，它会以 "Binance Wallet" 出现在第 1 类里 —— 也就是说
- * **不需要专门的币安连接器**，能连不上只是因为之前 UI 写死了 connectors[0]。
- *
- * 通用 injected 会和第 1 类里的某一个指向同一个 window.ethereum，
- * 列出来就成了两个按钮点下去是同一个钱包。所以：有具体扩展时就丢掉通用的，
- * 一个都没发现时才留着它当兜底（老扩展不广播 6963，只能靠通用注入）。
- *
- * ## 兜底分支是唯一能连错钱包的地方（实测踩到过）
- *
- * 6963 一个都没发现时，我们只剩 `window.ethereum` 这一个把手，而它**可能被多个
- * 扩展抢**（MetaMask + 币安钱包同时装着是常见组合）。此时点「连接」用哪个不由
- * 我们决定，也不是用户能选的。
- *
- * 什么时候会「一个都没发现」：扩展没在广播 6963（老版本），或者 —— 更容易被
- * 忽略的一种 —— **这个浏览器里根本没装那个钱包**。扩展不跨浏览器共享，Chrome 里
- * 装了 MetaMask 不代表 Edge 里也有；此时列表里只剩币安一个按钮，点下去连的就是
- * 币安，而人以为自己在用 MetaMask。同一个扩展组合换浏览器会连到不同钱包，
- * 原因多半在这里，而不是代码。
- *
- * wagmi 那边另有一句值得知道但**不是**本次原因：`createConfig.ts:335` 的
- * `if (storage && !store.persist.hasHydrated()) return` 会丢掉 hydrate 完成前
- * 到达的广播且不重试。但 `createConfig.ts:267` 是 `skipHydration: ssr`，我们没传
- * `ssr`（默认 false），localStorage 同步 hydrate，所以那句 guard 不会触发。
- *
- * ⚠️ 这里**刻意不去读 `window.ethereum`**（曾经为了在兜底时留一行日志读过一次，
- * 已撤回）：有些扩展把 `window.ethereum` 定义成会抛错的 getter，而在 render 里
- * 读它一旦抛出，整个组件树会失效 —— 表现是「页面看着还在，但点什么都没反应」。
- * 一行控制台日志换不来这个风险。连上之后面板顶部的「当前钱包」会显示实际用的
- * 是哪个扩展，那个是事后可查的。
+ * Provider 检测不碰 render，也不请求账户权限。钱包晚于页面注入时，
+ * ethereum#initialized / EIP-6963 更新会重查；从钱包切回浏览器也重查一次。
  */
-function pickable(connectors: readonly Connector[]): Connector[] {
-  const discovered = connectors.filter((c) => c.id !== 'injected')
-  return discovered.length > 0 ? [...discovered] : [...connectors]
+function useAvailableConnectors(connectors: readonly Connector[]) {
+  const [available, setAvailable] = useState<Connector[] | null>(null)
+  useEffect(() => {
+    let active = true
+    let revision = 0
+    const detect = () => {
+      const current = ++revision
+      void pickable(connectors).then((next) => {
+        if (active && current === revision) setAvailable(next)
+      })
+    }
+    detect()
+    window.addEventListener('ethereum#initialized', detect)
+    window.addEventListener('focus', detect)
+    return () => {
+      active = false
+      window.removeEventListener('ethereum#initialized', detect)
+      window.removeEventListener('focus', detect)
+    }
+  }, [connectors])
+  return available
 }
 
 /**
- * 钱包选择器。
- *
- * 一个钱包时不弹菜单 —— 多一次点击换不来任何信息。两个以上才给列表，
- * 这也是装了多个扩展时唯一能选中想要的那个的办法。
- *
- * `error` 是 `useConnect()` 的失败原因，**必须显示出来**：见 ConnectError。
+ * 一个注入钱包时仍然直接连接，旁边的箭头提供 WalletConnect 入口。
+ * 没有注入钱包的手机则直接打开 WalletConnect；多个扩展才先选钱包。
+ * null 表示检测中，[] 表示没有可用连接方式，不能再盲调 injected。
  */
-function WalletPicker({
+export function WalletPicker({
   connectors,
   isPending,
   error,
   onPick,
 }: {
-  connectors: Connector[]
+  connectors: Connector[] | null
   isPending: boolean
   error: unknown
   onPick: (c: Connector) => void
 }) {
   const [open, setOpen] = useState(false)
-
-  if (connectors.length === 0) {
-    return (
-      <a
-        href="https://www.binance.com/en/web3wallet"
-        target="_blank"
-        rel="noreferrer"
-        className="rounded-md border border-border px-3 py-1.5 text-xs text-muted-foreground hover:bg-muted hover:text-foreground"
-      >
-        {tr('未检测到钱包', 'No wallet detected')}
-      </a>
-    )
-  }
-
-  if (connectors.length === 1) {
-    return (
-      <div className="relative">
-        <button
-          type="button"
-          onClick={() => onPick(connectors[0])}
-          disabled={isPending}
-          className="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-50"
-        >
-          {isPending ? tr('连接中…', 'Connecting…') : tr(`连接 ${connectors[0].name}`, `Connect ${connectors[0].name}`)}
-        </button>
-        <ConnectError error={error} />
-      </div>
-    )
-  }
+  const wallets = connectors ?? []
+  const injected = wallets.filter((c) => c.type === 'injected')
+  const direct = wallets.length === 1 ? wallets[0] : injected.length === 1 ? injected[0] : undefined
+  const disabled = isPending || connectors === null
+  const toggle = () => setOpen((v) => !v)
+  const label = connectors === null
+    ? tr('检测钱包…', 'Detecting wallets…')
+    : isPending
+      ? tr('连接中…', 'Connecting…')
+      : direct?.type === 'walletConnect'
+        ? tr('连接手机钱包', 'Connect mobile wallet')
+        : direct && direct.id !== 'injected'
+          ? tr(`连接 ${direct.name}`, `Connect ${direct.name}`)
+          : tr('连接钱包', 'Connect wallet')
 
   return (
     <div className="relative">
-      <button
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        disabled={isPending}
-        className="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-50"
-      >
-        {isPending ? tr('连接中…', 'Connecting…') : tr('连接钱包', 'Connect wallet')}
-      </button>
+      <div className="flex items-center gap-1">
+        <button
+          type="button"
+          onClick={() => direct ? onPick(direct) : toggle()}
+          disabled={disabled}
+          aria-expanded={direct ? undefined : open}
+          className="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-50"
+        >
+          {label}
+        </button>
+        {direct && wallets.length > 1 && (
+          <button
+            type="button"
+            onClick={toggle}
+            disabled={disabled}
+            aria-label={tr('其他钱包 / 手机连接', 'Other wallets / mobile connection')}
+            aria-expanded={open}
+            className="rounded-md border border-border px-2 py-1.5 text-xs hover:bg-muted disabled:opacity-50"
+          >
+            ▾
+          </button>
+        )}
+      </div>
 
       <ConnectError error={error} />
 
       {open && (
         <>
-          {/* 点外面关掉。放在菜单下层，z 比菜单低 */}
           <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
-          <div className="absolute right-0 z-50 mt-1 w-48 overflow-hidden rounded-lg border border-border bg-popover shadow-lg">
-            {connectors.map((c) => (
+          <div className="absolute right-0 z-50 mt-1 w-[min(92vw,17rem)] overflow-hidden rounded-lg border border-border bg-popover shadow-lg">
+            {wallets.length === 0 ? (
+              <p className="p-3 text-xs leading-relaxed text-muted-foreground">
+                {tr(
+                  '未检测到浏览器钱包，本站尚未启用 WalletConnect。请在币安钱包或 MetaMask 的内置浏览器中打开当前网址后连接。添加到主屏不会自动获得钱包。',
+                  'No browser wallet detected, and WalletConnect is not enabled on this site. Open this URL in the Binance Wallet or MetaMask in-app browser to connect. Adding it to your home screen does not provide a wallet.',
+                )}
+              </p>
+            ) : wallets.map((c) => (
               <button
                 key={c.uid}
                 type="button"
+                disabled={disabled}
                 onClick={() => {
                   setOpen(false)
                   onPick(c)
                 }}
-                className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-foreground hover:bg-muted"
+                className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-foreground hover:bg-muted disabled:opacity-50"
               >
                 {c.icon ? (
                   <img src={c.icon} alt="" className="size-4 shrink-0 rounded" />
                 ) : (
                   <span className="size-4 shrink-0 rounded bg-muted" />
                 )}
-                <span className="truncate">{c.name}</span>
+                <span className="truncate">
+                  {c.type === 'walletConnect'
+                    ? tr('WalletConnect · 手机 / 扫码', 'WalletConnect · Mobile / QR')
+                    : c.id === 'injected' ? tr('浏览器钱包', 'Browser wallet') : c.name}
+                </span>
               </button>
             ))}
           </div>
@@ -340,68 +336,6 @@ function ConnectError({ error }: { error: unknown }) {
       {explainConnectError(error)}
     </p>
   )
-}
-
-/**
- * 连接失败翻译成人话。
- *
- * ## 沿 cause 链走
- *
- * 真正的错误在最里层：wagmi 的 `ConnectError` 包着 viem 的 `ProviderRpcError`，
- * 包着 MetaMask 的原始报文。只看最外层 `error.message` 会得到一句泛泛的
- * "Failed to connect."，而 -32002 那层信息全丢 —— 那正是唯一有用的那层。
- *
- * ## ⚠️ 不要用 `instanceof Error` 判断（实测踩到过）
- *
- * 第一版写的是 `if (cur instanceof Error) { push(cur.name, cur.message) }`，
- * 结果界面上显示的是 **`[object Object]`** —— 这个错误对象不是这个 realm 的
- * `Error` 实例，判断为 false，直接落到 `String(cur)` 分支。所以这里改成
- * **鸭子类型**：只认 `name` / `shortMessage` / `message` / `code` 这几个字段
- * 存不存在，不问它是什么类的实例。
- *
- * `code` 要单独取：-32002 只有 `code` 里才有，报文里那句 "already pending"
- * 换个扩展可能就不一样了，两个都留着才稳。
- *
- * 深度限死 6 层：正常就两三层，设上限是防某个扩展造出自引用的 cause。
- */
-function explainConnectError(e: unknown): string {
-  const texts: string[] = []
-  const msgs: string[] = []
-  let cur: unknown = e
-  for (let i = 0; cur != null && i < 6; i++) {
-    if (typeof cur === 'string') {
-      texts.push(cur)
-      msgs.push(cur)
-      break
-    }
-    if (typeof cur !== 'object') {
-      texts.push(String(cur))
-      break
-    }
-    const o = cur as Record<string, unknown>
-    for (const k of ['shortMessage', 'message', 'name']) {
-      const v = o[k]
-      if (typeof v !== 'string' || !v) continue
-      texts.push(v)
-      // name 只是类名（如 "ConnectError"），不适合给人看，只用来做匹配
-      if (k !== 'name') msgs.push(v)
-    }
-    if (typeof o.code === 'number' || typeof o.code === 'string') {
-      texts.push(`code=${o.code}`)
-    }
-    cur = o.cause
-  }
-
-  const text = texts.join(' | ')
-  if (/-32002|already pending/i.test(text)) {
-    return tr(
-      'MetaMask 里还有一个没处理完的连接请求（-32002）。打开 MetaMask 把那笔待确认的弹窗确认或取消掉，再点一次。',
-      'MetaMask still has a pending connection request (-32002). Open MetaMask, approve or cancel that pending prompt, then try again.',
-    )
-  }
-  if (/reject|denied|refus/i.test(text)) return tr('你在钱包里拒绝了这次连接。', 'You rejected the connection in your wallet.')
-  // 兜底取**最里层**那条报文：外层的 "Failed to connect." 谁看了都没用
-  return msgs[msgs.length - 1] ?? texts[texts.length - 1] ?? tr('连接失败', 'Connection failed')
 }
 
 /**

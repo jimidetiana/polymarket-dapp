@@ -1,19 +1,40 @@
 import { http, createConfig } from 'wagmi'
 import { polygon } from 'wagmi/chains'
-import { injected } from 'wagmi/connectors'
+import { injected } from 'wagmi/connectors/injected'
+import { walletConnect } from 'wagmi/connectors/walletConnect'
+
+const projectId = import.meta.env.VITE_WALLETCONNECT_PROJECT_ID?.trim()
+const origin = typeof window === 'undefined'
+  ? 'https://polysoccer.zhangsanfengzhsh.workers.dev'
+  : window.location.origin
+const isAndroidPwa = typeof window !== 'undefined'
+  && typeof navigator !== 'undefined'
+  && /Android/i.test(navigator.userAgent)
+  && window.matchMedia?.('(display-mode: standalone)')?.matches === true
 
 /**
- * 钱包配置。
- *
- * 链选 Polygon 而不是 Ethereum：Polymarket CLOB 跑在 Polygon 上
- * （USDC.e / 条件代币都在那边）。连错链下单会静默失败或烧 gas。
- *
- * 连接器只装 injected（MetaMask / Rabby 等浏览器扩展）。WalletConnect
- * 要项目 ID，等真有移动端用户再加，现在加只会多一个空按钮。
+ * Polygon 上的钱包连接：扩展 / 钱包内置浏览器走 injected，普通手机浏览器
+ * 和 PWA 走 WalletConnect。Project ID 是公开标识；没有配置时只保留注入连接，
+ * 不用空 ID 初始化一个必失败的远程连接器。
  */
 export const wagmiConfig = createConfig({
   chains: [polygon],
-  connectors: [injected()],
+  connectors: [
+    injected(),
+    ...(projectId ? [walletConnect({
+      projectId,
+      showQrModal: true,
+      metadata: {
+        name: 'PolySoccer',
+        description: 'Polymarket 足球盘口下单与战绩',
+        url: origin,
+        icons: [`${origin}/pwa-192x192.png`],
+        // 返回地址落在 PWA 的 scope/start_url 内，是否回跳仍由钱包与系统决定。
+        // 不给桌面扫码会话加回跳，也不伪造 PWA 并未注册的 native scheme / Link Mode。
+        ...(isAndroidPwa ? { redirect: { universal: `${origin}/` } } : {}),
+      },
+    })] : []),
+  ],
   transports: {
     [polygon.id]: http(),
   },

@@ -78,6 +78,39 @@ read from your **proxy wallet**, not the signing address.
 
 ---
 
+## Mobile wallets
+
+- **Binance Wallet / MetaMask in-app browser**: open this site's URL inside the
+  wallet and connect using its injected provider, just like a desktop extension.
+- **Mobile Chrome / Safari / home-screen PWA**: use **Connect mobile wallet**
+  (WalletConnect), then select Binance Wallet or MetaMask in the connection
+  dialog. Approve in the wallet and return to the browser/PWA. Adding the site
+  to the home screen does not inject a wallet by itself.
+- Desktop extensions still connect directly; the adjacent arrow offers
+  WalletConnect when it is configured. Multiple injected wallets remain selectable.
+
+To enable WalletConnect, create your own project at
+[Reown Dashboard](https://dashboard.reown.com), allow the frontend's production
+origin (and any HTTPS development origin you use), and set this in `.env`:
+
+```dotenv
+VITE_WALLETCONNECT_PROJECT_ID=your_project_id
+```
+
+This is a **public project identifier**, not a private key or builder secret.
+Restart the dev server or rebuild and deploy after changing it. Without an ID,
+only injected wallets are available; the UI explains how to use a wallet's
+in-app browser rather than attempting to connect a nonexistent provider.
+Cross-app connection requires internet access and a compatible wallet version;
+verify both wallets on a real phone before treating a deployment as tested.
+
+Android home-screen PWAs advertise a WalletConnect `redirect.universal` URL
+pointing to the site's root (inside the PWA scope). This gives supporting wallets
+a return destination, but the wallet and Android decide whether to open it and
+whether it returns to the existing PWA window. Desktop browser sessions do not advertise
+this return URL. After changing this metadata, disconnect and reconnect the wallet;
+an existing session does not receive the new metadata just by refreshing the page.
+
 ## Development
 
 ```bash
