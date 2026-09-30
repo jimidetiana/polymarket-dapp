@@ -38,4 +38,5 @@
 **🚀 开发 / 部署**
 `npm run dev` 本地开发 · `npm run build` 构建 · `npm run test` 测试 · `npm run deploy` 发到 Cloudflare Workers。
 正式地址：https://polysoccer.zhangsanfengzhsh.workers.dev
+可「添加到主屏」当手机 app 用（PWA）：独立图标、全屏启动、离线兜住界面壳；更新随部署自动生效，无需重装。
 签名后端在独立仓库 `polymarket-builder-sign`（Cloudflare Workers），持有 builder 凭据，本前端包里不含任何机密。

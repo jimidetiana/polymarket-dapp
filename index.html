@@ -3,8 +3,18 @@
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <title>polysoccer</title>
+
+    <!-- PWA：manifest 与注册脚本由 vite-plugin-pwa 在 build 时注入，
+         下面这些是它不管、但 iOS「添加到主屏」需要的补充标签。 -->
+    <meta name="theme-color" content="#f5f5f7" />
+    <!-- iOS 全屏启动 + 主屏图标（iOS 基本只认 apple-touch-icon，不读 manifest 图标） -->
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta name="apple-mobile-web-app-title" content="PolySoccer" />
   </head>
   <body>
     <div id="root"></div>
