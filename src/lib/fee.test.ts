@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import {
   bpsLabel,
   feeUsdOf,
+  polymarketFeeUsdOf,
   feeBreakdown,
   formatFeeAmount,
   formatMoney,
@@ -80,6 +81,79 @@ describe('精确手续费（美元，不取整到分）', () => {
     expect(feeUsdOf(100, 0)).toBe(0)
     expect(feeUsdOf(0, 5)).toBe(0)
     expect(feeUsdOf(-5, 5)).toBe(0)
+  })
+})
+
+describe('Polymarket 吃单手续费预估', () => {
+  const sportsFee = { rate: 0.03, exponent: 1 }
+
+  it('按份额与价格曲线收费，不把 rate 当固定名义额百分比', () => {
+    expect(polymarketFeeUsdOf(5, 0.08, sportsFee)).toBe(0.01104)
+    expect(polymarketFeeUsdOf(100, 0.5, sportsFee)).toBe(0.75)
+    expect(polymarketFeeUsdOf(100, 0.1, sportsFee)).toBe(0.27)
+    expect(polymarketFeeUsdOf(100, 0.9, sportsFee)).toBe(0.27)
+  })
+
+  it('使用盘口返回的 rate 和 exponent，而非硬编码体育费率', () => {
+    expect(polymarketFeeUsdOf(100, 0.5, { rate: 0.25, exponent: 2 })).toBe(1.5625)
+    expect(polymarketFeeUsdOf(100, 0.5, { rate: 0.02, exponent: 0 })).toBe(2)
+  })
+
+  it('零费率市场保持免费', () => {
+    expect(polymarketFeeUsdOf(100, 0.5, { rate: 0, exponent: 1 })).toBe(0)
+  })
+
+  it('小额费用保留到 6 位小数', () => {
+    expect(polymarketFeeUsdOf(1, 0.001, sportsFee)).toBe(0.00003)
+  })
+
+  it('空输入、越界价格、非法费率不产生 NaN 或负费用', () => {
+    for (const size of [0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(polymarketFeeUsdOf(size, 0.5, sportsFee)).toBe(0)
+    }
+    for (const price of [0, 1, -0.1, 1.1, Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(polymarketFeeUsdOf(5, price, sportsFee)).toBe(0)
+    }
+    for (const fee of [
+      { rate: -1, exponent: 1 },
+      { rate: Number.NaN, exponent: 1 },
+      { rate: Number.POSITIVE_INFINITY, exponent: 1 },
+      { rate: 0.03, exponent: -1 },
+      { rate: 0.03, exponent: Number.NaN },
+    ]) {
+      expect(polymarketFeeUsdOf(5, 0.5, fee)).toBe(0)
+    }
+  })
+
+  it('截图中的 5 份 × $0.08，两项费用分开并计入合计', () => {
+    const b = feeBreakdown(5, 0.08, 5, sportsFee)
+    expect(b.notionalUsd).toBe(0.4)
+    expect(b.builderFeeUsd).toBe(0.0002)
+    expect(b.polymarketFeeUsd).toBe(0.01104)
+    expect(b.feeUsd).toBe(0.01124)
+    expect(settleOf(b, 'BUY').usd).toBe(0.41124)
+    expect(settleOf(b, 'SELL').usd).toBe(0.38876)
+  })
+
+  it('买入余额判定包含 Polymarket 费，卖出同时扣除两项费', () => {
+    const b = feeBreakdown(200, 0.5, 5, sportsFee)
+    expect(b.builderFeeUsd).toBe(0.05)
+    expect(b.polymarketFeeUsd).toBe(1.5)
+    expect(b.totalUsd).toBe(101.55)
+    expect(b.proceedsUsd).toBe(98.45)
+    expect(b.totalUsd).toBeGreaterThan(101)
+  })
+
+  it('本平台费为零时仍计算 Polymarket 费，反之亦然', () => {
+    const onlyMarket = feeBreakdown(100, 0.5, 0, sportsFee)
+    expect(onlyMarket.builderFeeUsd).toBe(0)
+    expect(onlyMarket.feeUsd).toBe(0.75)
+    expect(settleOf(onlyMarket, 'BUY').label).toBe('预估合计（含手续费）')
+
+    const onlyBuilder = feeBreakdown(100, 0.5, 5, { rate: 0, exponent: 1 })
+    expect(onlyBuilder.polymarketFeeUsd).toBe(0)
+    expect(onlyBuilder.feeUsd).toBe(0.025)
+    expect(onlyBuilder.totalUsd).toBe(50.025)
   })
 })
 
@@ -175,8 +249,8 @@ describe('买入扣款 / 卖出到账', () => {
 
   it('两个方向的标题跟着数字一起变，不会张冠李戴', () => {
     const withFee = feeBreakdown(200, 0.5, 5)
-    expect(settleOf(withFee, 'BUY').label).toBe('合计（实际扣款）')
-    expect(settleOf(withFee, 'SELL').label).toBe('合计（扣费后到账）')
+    expect(settleOf(withFee, 'BUY').label).toBe('预估合计（含手续费）')
+    expect(settleOf(withFee, 'SELL').label).toBe('预估到账（扣费后）')
 
     // 费率为 0 时不该再说「扣款/到账」—— 没有这笔钱
     const noFee = feeBreakdown(200, 0.5, 0)

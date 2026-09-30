@@ -33,7 +33,7 @@
 • 赛事/盘口：Gamma（CORS 全开，浏览器直连）；足球用 `tag_slug=soccer`
 • 列表不带盘口（一页 4MB→470KB），选中比赛才按需拉那一场（约 500KB），react-query 缓存 5 分钟
 • 实时价格走 CLOB WebSocket
-• 费率从 `fetchBuilderFeeRates` 读，拿不到退回 5bps，仅显示用、不挡下单
+• 手续费两项分开预估显示：本平台 builder 费从 `fetchBuilderFeeRates` 读（拿不到退回 5bps）、Polymarket 盘口费从盘口元数据读（拿不到按体育盘口默认预估）；都按吃单口径估算、仅显示用、不挡下单
 
 **🚀 开发 / 部署**
 `npm run dev` 本地开发 · `npm run build` 构建 · `npm run test` 测试 · `npm run deploy` 发到 Cloudflare Workers。

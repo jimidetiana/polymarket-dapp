@@ -19,7 +19,7 @@
  * 搞反会 401。SDK 内部已处理，别改回去。
  */
 import { createPublicClient, createSecureClient, OrderSide, remoteBuilderSigning, type SecureClient } from '@polymarket/client'
-import { fetchBuilderFeeRates } from '@polymarket/client/actions'
+import { fetchBuilderFeeRates, fetchMarketInfo } from '@polymarket/client/actions'
 import { signerFrom } from '@polymarket/client/viem'
 import { createPublicClient as createViemPublicClient, erc1155Abi, erc20Abi, http, type WalletClient } from 'viem'
 import { polygon } from 'viem/chains'
@@ -27,6 +27,7 @@ import { builderCode } from './builder'
 import { tr } from './i18n'
 import { resolveSigningUrl, resetSigningUrl } from './polymarket-config'
 import { PUSD_POLYGON } from './proxy-wallet'
+import type { MarketFee } from './fee'
 
 export type OrderSideName = 'BUY' | 'SELL'
 export type OrderKind = 'market' | 'limit'
@@ -109,6 +110,16 @@ export async function fetchFeeRates(): Promise<{ makerBps: number; takerBps: num
   if (!code) return null
   const r = await fetchBuilderFeeRates(publicClient, { builderCode: code })
   return { makerBps: Number(r.maker) * 10_000, takerBps: Number(r.taker) * 10_000 }
+}
+
+/** 与 V2 下单使用同一份盘口元数据，免鉴权；零费率也原样保留。 */
+export async function fetchPolymarketFee(conditionId: string): Promise<MarketFee> {
+  const { feeInfo } = await fetchMarketInfo(publicClient, { conditionId })
+  if (!Number.isFinite(feeInfo.rate) || feeInfo.rate < 0 ||
+      !Number.isFinite(feeInfo.exponent) || feeInfo.exponent < 0) {
+    throw new Error('Invalid Polymarket market fee')
+  }
+  return feeInfo
 }
 
 // ── 已认证客户端（每个签名地址一个，缓存 Promise）──────────

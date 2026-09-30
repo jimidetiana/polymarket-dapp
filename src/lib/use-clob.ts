@@ -18,7 +18,7 @@ import { erc20Abi, type WalletClient } from 'viem'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { PUSD_POLYGON } from './proxy-wallet'
 import { useProxyWallet } from './use-wallet'
-import { BUILDER_FEE_RATES, maxBpsOf } from './fee'
+import { BUILDER_FEE_RATES, maxBpsOf, POLYMARKET_SPORTS_FEE, type MarketFee } from './fee'
 import { tr, useLang } from './i18n'
 import {
   cancelOrderById,
@@ -26,6 +26,7 @@ import {
   fetchApprovalState,
   fetchBook,
   fetchFeeRates,
+  fetchPolymarketFee,
   getReadClient,
   getSecureClient,
   listOpenOrders,
@@ -223,6 +224,23 @@ export function useBuilderFeeRates(): { feeBps: number } {
   // 那时该改的是常量本身（改成 0），不是这个判断。
   const fromApi = q.data ? maxBpsOf(q.data) : 0
   return { feeBps: fromApi > 0 ? fromApi : maxBpsOf(BUILDER_FEE_RATES) }
+}
+
+/** 按 conditionId 缓存，两侧 token 共用；查不到用体育盘口兜底，不阻止下单。 */
+export function usePolymarketFee(conditionId: string | null): MarketFee {
+  const q = useQuery({
+    queryKey: ['polymarket-fee', conditionId],
+    queryFn: () => fetchPolymarketFee(conditionId as string),
+    enabled: !!conditionId,
+    staleTime: 5 * 60 * 1000,
+    retry: 1,
+  })
+
+  useEffect(() => {
+    if (q.error) console.warn('[fee] Polymarket 费率读取失败，按体育盘口默认值预估：', q.error)
+  }, [q.error])
+
+  return q.data ?? POLYMARKET_SPORTS_FEE
 }
 
 // ── 下单 ────────────────────────────────────────────────

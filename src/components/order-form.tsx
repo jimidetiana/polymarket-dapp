@@ -23,7 +23,7 @@ import {
   toSteps,
   type TickSize,
 } from '../lib/tick'
-import { feeBreakdown, formatFeeAmount, formatMoney, settleOf } from '../lib/fee'
+import { feeBreakdown, formatFeeAmount, formatMoney, settleOf, type MarketFee } from '../lib/fee'
 import type { OrderKind, OrderSideName } from '../lib/clob-client'
 import { tr } from '../lib/i18n'
 
@@ -59,6 +59,8 @@ interface Props {
    * 传的是已经取过 max(maker, taker) 的那个值（见 lib/fee 的 maxBpsOf）。
    */
   feeBps: number
+  /** 当前盘口的 Polymarket 费率，与本平台 builder 费率分开。 */
+  polymarketFee: MarketFee
   /** 最小下单份额。CLOB 盘口给了就用它的，没给用 5 */
   minShares?: number
   /** 可用余额（USDC）。undefined = 拿不到，此时不做上限校验 */
@@ -78,6 +80,7 @@ export function OrderForm({
   fallbackPrice,
   tick,
   feeBps,
+  polymarketFee,
   minShares = MIN_SHARES,
   maxAmount,
   externalPrice,
@@ -140,7 +143,9 @@ export function OrderForm({
    * 判余额、合计那一行、按钮上的数字，全部从这里派生，不用前面的 `total` ——
    * 那个数是发给交易所的税前金额，不是用户要付的钱。
    */
-  const cost = feeBreakdown(size, price, feeBps)
+  // 市价买提交的是取整到分的 amount，SDK 按 amount / price 计费；其他订单按份额。
+  const feeSize = type === 'market' && side === 'BUY' && price > 0 ? total / price : size
+  const cost = feeBreakdown(feeSize, price, feeBps, polymarketFee)
 
   /**
    * 这一侧实际付/收的钱，以及合计那行的标题。买卖方向相反，所以数字和标题
@@ -189,7 +194,7 @@ export function OrderForm({
             `Price must be ${formatTickPrice(pb.min, tick)} – ${formatTickPrice(pb.max, tick)} on a ${tick} tick`,
           )
         : overBalance
-          ? feeBps > 0
+          ? cost.feeUsd > 0
             ? tr(
                 `超出可用余额 $${(maxAmount ?? 0).toFixed(2)}（本金 $${cost.notionalUsd.toFixed(2)} + 手续费 ${formatFeeAmount(cost.feeUsd)}）`,
                 `Exceeds available balance $${(maxAmount ?? 0).toFixed(2)} (principal $${cost.notionalUsd.toFixed(2)} + fee ${formatFeeAmount(cost.feeUsd)})`,
@@ -384,14 +389,28 @@ export function OrderForm({
         <SumRow k={tr('单价', 'Price')} v={formatTickPrice(price, tick)} />
         <SumRow k={tr('份额', 'Shares')} v={String(size)} />
         <SumRow k={tr('本金', 'Principal')} v={`$${cost.notionalUsd.toFixed(2)}`} />
-        {feeBps > 0 && (
-          <SumRow k={tr(`手续费（${cost.rateLabel}）`, `Fee (${cost.rateLabel})`)} v={formatFeeAmount(cost.feeUsd)} />
-        )}
+        <SumRow
+          k={tr('Polymarket 手续费（预估）', 'Polymarket fee (est.)')}
+          v={formatFeeAmount(cost.polymarketFeeUsd)}
+        />
+        <SumRow
+          k={tr(`本平台手续费（${cost.rateLabel}）`, `Our platform fee (${cost.rateLabel})`)}
+          v={formatFeeAmount(cost.builderFeeUsd)}
+        />
         <SumRow k={settle.label} v={formatMoney(settle.usd)} strong />
         {maxAmount != null && side === 'BUY' && (
           <SumRow k={tr('可用余额', 'Available')} v={`$${maxAmount.toFixed(2)}`} />
         )}
       </div>
+
+      {type === 'limit' && polymarketFee.rate > 0 && (
+        <p className="text-[10px] leading-snug text-muted-foreground">
+          {tr(
+            'Polymarket 手续费按吃单预估；若作为挂单成交，则不收此项费用。最终以实际成交为准。',
+            'Polymarket fees assume a taker fill; maker fills have no Polymarket fee. Final fees depend on execution.',
+          )}
+        </p>
+      )}
 
       {(error || blocked) && (
         <p className="text-[11px] leading-snug text-warning">{blocked || error}</p>
@@ -411,7 +430,7 @@ export function OrderForm({
       >
         {submitting
           ? tr('提交中…', 'Submitting…')
-          : `${buy ? tr('买入', 'Buy') : tr('卖出', 'Sell')} ${outcomeName} · $${settle.usd.toFixed(2)}`}
+          : `${buy ? tr('买入', 'Buy') : tr('卖出', 'Sell')} ${outcomeName} · ${formatMoney(settle.usd)}`}
       </button>
     </div>
   )

@@ -54,6 +54,12 @@ import { tr } from './i18n'
  */
 export type FeeRates = { makerBps: number; takerBps: number }
 
+/** Polymarket 按盘口返回的小数费率与价格曲线指数，不是 builder 的 bps。 */
+export type MarketFee = { rate: number; exponent: number }
+
+/** 体育盘口的展示兜底；查询成功时始终以盘口 API 为准，包括零费率。 */
+export const POLYMARKET_SPORTS_FEE: MarketFee = { rate: 0.03, exponent: 1 }
+
 /**
  * **兜底**费率，基点。真正生效的费率配在 Polymarket 那边（builder 设置页），
  * 由 `fetchFeeRates()` 从 API 读（见 lib/clob-client.ts），界面优先用那个。
@@ -120,16 +126,29 @@ export function feeUsdOf(notionalUsd: number, bps: number): number {
   return Math.round(((notionalUsd * bps) / 10_000) * 1e6) / 1e6
 }
 
+/** 与 V2 SDK 一致：份额 × rate × [price × (1 − price)]^exponent，按吃单预估。 */
+export function polymarketFeeUsdOf(size: number, price: number, fee: MarketFee): number {
+  if (!Number.isFinite(size) || size <= 0) return 0
+  if (!Number.isFinite(price) || price <= 0 || price >= 1) return 0
+  if (!Number.isFinite(fee.rate) || fee.rate <= 0) return 0
+  if (!Number.isFinite(fee.exponent) || fee.exponent < 0) return 0
+  return Math.round(size * fee.rate * (price * (1 - price)) ** fee.exponent * 1e6) / 1e6
+}
+
 export type FeeBreakdown = {
   /** 份额 × 单价，税前 */
   notionalUsd: number
-  /** 手续费（美元，精确到 USDC 的 6 位小数，不取整到分） */
+  /** 本平台 builder 手续费 */
+  builderFeeUsd: number
+  /** Polymarket 吃单手续费预估 */
+  polymarketFeeUsd: number
+  /** 两项手续费之和，精确到 6 位小数 */
   feeUsd: number
   /** 买入实际付出：notionalUsd + feeUsd */
   totalUsd: number
   /** 卖出实际到手：notionalUsd − feeUsd */
   proceedsUsd: number
-  /** 费率文案，如 "0.05%"。**金额舍成 0 时它是唯一还说得清的东西** */
+  /** 本平台费率文案，如 "0.05%" */
   rateLabel: string
 }
 
@@ -145,15 +164,19 @@ export type FeeBreakdown = {
  * （到账）。只留一个数就必须在调用点按方向挑，挑反了界面就把钱说多/说少，
  * 而这正是本模块要防的那类错。所以两个都算好，由 `settleOf` 按方向取。
  */
-export function feeBreakdown(size: number, price: number, bps: number): FeeBreakdown {
+export function feeBreakdown(size: number, price: number, bps: number, marketFee?: MarketFee): FeeBreakdown {
   const notionalUsd = Math.round(size * price * 100) / 100
-  const feeUsd = feeUsdOf(notionalUsd, bps)
+  const builderFeeUsd = feeUsdOf(notionalUsd, bps)
+  const polymarketFeeUsd = marketFee ? polymarketFeeUsdOf(size, price, marketFee) : 0
+  const feeUsd = Math.round((builderFeeUsd + polymarketFeeUsd) * 1e6) / 1e6
   // 合计/到账按 USDC 的 6 位小数对齐（不再压到 2 位）—— 压到分会把分以下的手续费
   // 从合计里抹掉，界面上就成了「手续费 $0.0015，合计却没变」。6 位是交易所的
   // 真实精度，显示层再由 formatMoney 决定给几位。
   const round6 = (n: number) => Math.round(n * 1e6) / 1e6
   return {
     notionalUsd,
+    builderFeeUsd,
+    polymarketFeeUsd,
     feeUsd,
     totalUsd: round6(notionalUsd + feeUsd),
     proceedsUsd: round6(notionalUsd - feeUsd),
@@ -161,27 +184,14 @@ export function feeBreakdown(size: number, price: number, bps: number): FeeBreak
   }
 }
 
-/**
- * 这一侧用户**实际付出 / 实际到手**的钱，以及那行的标题。
- *
- * 数字和标题放在一个函数里返回，是因为它们必须同时正确：标题写「实际扣款」
- * 而数字是卖出到手，比两个都写错还难发现。判断余额、按钮上的数字、合计这一行
- * 全部走这里。
- *
- * ## 卖出侧的机制没实测过
- *
- * 「卖出的手续费从成交额里扣」是按 `*_fee_rate_bps` 按名义额计费推出来的，
- * 与费率的算法同源、同样**未实测**（见文件头）。已知错的只有一种：若实际是
- * 卖出**另收**一笔费而不是从成交额里扣，那这里的 `proceedsUsd` 会偏乐观。
- * 拿到 builder code 跑通第一笔后，拿回执里的 `feeUsdc` 一并核对。
- */
+/** 费用按当前价格预估，不把吃单预估写成已确定的扣款；卖出从本金扣除两项费用。 */
 export function settleOf(
   b: FeeBreakdown,
   side: 'BUY' | 'SELL',
 ): { label: string; usd: number } {
   return side === 'BUY'
-    ? { label: b.feeUsd > 0 ? tr('合计（实际扣款）', 'Total (charged)') : tr('预估总额', 'Est. total'), usd: b.totalUsd }
-    : { label: b.feeUsd > 0 ? tr('合计（扣费后到账）', 'Total (after fees)') : tr('预估总额', 'Est. total'), usd: b.proceedsUsd }
+    ? { label: b.feeUsd > 0 ? tr('预估合计（含手续费）', 'Est. total (incl. fees)') : tr('预估总额', 'Est. total'), usd: b.totalUsd }
+    : { label: b.feeUsd > 0 ? tr('预估到账（扣费后）', 'Est. proceeds (after fees)') : tr('预估总额', 'Est. total'), usd: b.proceedsUsd }
 }
 
 /**
