@@ -2,6 +2,7 @@ import { http, createConfig } from 'wagmi'
 import { polygon } from 'wagmi/chains'
 import { injected } from 'wagmi/connectors/injected'
 import { walletConnect } from 'wagmi/connectors/walletConnect'
+import { withAndroidWalletLaunch } from './wallet-launch-connector'
 
 const projectId = import.meta.env.VITE_WALLETCONNECT_PROJECT_ID?.trim()
 const origin = typeof window === 'undefined'
@@ -21,7 +22,7 @@ export const wagmiConfig = createConfig({
   chains: [polygon],
   connectors: [
     injected(),
-    ...(projectId ? [walletConnect({
+    ...(projectId ? [withAndroidWalletLaunch(walletConnect({
       projectId,
       showQrModal: true,
       metadata: {
@@ -33,7 +34,7 @@ export const wagmiConfig = createConfig({
         // 不给桌面扫码会话加回跳，也不伪造 PWA 并未注册的 native scheme / Link Mode。
         ...(isAndroidPwa ? { redirect: { universal: `${origin}/` } } : {}),
       },
-    })] : []),
+    }))] : []),
   ],
   transports: {
     [polygon.id]: http(),
