@@ -66,7 +66,7 @@ describe('Android 指定钱包应用的 Intent', () => {
 describe('SDK 首次连接和后续签名共用唤起入口', () => {
   it('首次连接只按本次选择的钱包，且只安装一次', async () => {
     const open = vi.fn(() => null)
-    vi.stubGlobal('window', { open })
+    vi.stubGlobal('window', { open, location: { assign: vi.fn() } })
     sdk.state.recentWallet = metamask
     sdk.getRecentWallets.mockReturnValue([trust])
     const { installAndroidWalletLaunch } = await import('./android-wallet-launch')
@@ -74,27 +74,29 @@ describe('SDK 首次连接和后续签名共用唤起入口', () => {
     const patched = window.open
     installAndroidWalletLaunch()
     expect(window.open).toBe(patched)
-    window.open(pairing, '_blank', 'noreferrer noopener')
-    expect(open).toHaveBeenCalledExactlyOnceWith(
-      expect.stringContaining(';package=io.metamask;end'), '_self', 'noreferrer noopener',
+    expect(window.open(pairing, '_blank', 'noreferrer noopener')).toBeNull()
+    expect(window.location.assign).toHaveBeenCalledExactlyOnceWith(
+      `intent://${pairing.slice('https://'.length)}#Intent;scheme=https;package=io.metamask;end`,
     )
+    expect(open).not.toHaveBeenCalled()
     expect(sdk.getRecentWallets).not.toHaveBeenCalled()
   })
 
   it('刷新后从 SDK 已连接钱包及历史元数据恢复签名目标', async () => {
     const open = vi.fn()
-    vi.stubGlobal('window', { open })
+    vi.stubGlobal('window', { open, location: { assign: vi.fn() } })
     sdk.getRecentWallets.mockReturnValue([trust, metamask])
     sdk.getWalletConnectDeepLink.mockReturnValue({ name: 'MetaMask', href: metamask.mobile_link })
     const { installAndroidWalletLaunch } = await import('./android-wallet-launch')
     installAndroidWalletLaunch()
     window.open(signing, '_blank')
-    expect(open).toHaveBeenCalledWith(expect.stringContaining(';package=io.metamask;end'), '_self', undefined)
+    expect(window.location.assign).toHaveBeenCalledExactlyOnceWith(expect.stringContaining(';package=io.metamask;end'))
+    expect(open).not.toHaveBeenCalled()
   })
 
   it('换钱包后签名按当前会话，不按上一次的钱包；断开后不沿用历史记录', async () => {
     const open = vi.fn()
-    vi.stubGlobal('window', { open })
+    vi.stubGlobal('window', { open, location: { assign: vi.fn() } })
     sdk.state.recentWallet = metamask
     sdk.getRecentWallets.mockReturnValue([metamask, trust])
     sdk.getWalletConnectDeepLink.mockReturnValue({ name: 'Trust Wallet', href: trust.mobile_link })
@@ -102,7 +104,8 @@ describe('SDK 首次连接和后续签名共用唤起入口', () => {
     installAndroidWalletLaunch()
     const href = 'trust://wc?requestId=123&sessionTopic=abc'
     window.open(href, '_self')
-    expect(open).toHaveBeenLastCalledWith(expect.stringContaining(';package=com.wallet.crypto.trustapp;end'), '_self', undefined)
+    expect(window.location.assign).toHaveBeenCalledExactlyOnceWith(expect.stringContaining(';package=com.wallet.crypto.trustapp;end'))
+    expect(open).not.toHaveBeenCalled()
     sdk.getWalletConnectDeepLink.mockReturnValue(undefined)
     window.open(href, '_self')
     expect(open).toHaveBeenLastCalledWith(href, '_self', undefined)
@@ -110,20 +113,21 @@ describe('SDK 首次连接和后续签名共用唤起入口', () => {
 
   it('相同 deep link 的钱包仍按会话选择，不串到历史钱包包名', async () => {
     const open = vi.fn()
-    vi.stubGlobal('window', { open })
+    vi.stubGlobal('window', { open, location: { assign: vi.fn() } })
     sdk.state.recentWallet = { ...metamask, mobile_link: 'wallet://' }
     sdk.getRecentWallets.mockReturnValue([{ ...trust, mobile_link: 'wallet://' }])
     sdk.getWalletConnectDeepLink.mockReturnValue({ name: 'Trust Wallet', href: 'wallet://' })
     const { installAndroidWalletLaunch } = await import('./android-wallet-launch')
     installAndroidWalletLaunch()
     window.open('wallet://wc?requestId=123&sessionTopic=abc')
-    expect(open).toHaveBeenCalledWith(expect.stringContaining(';package=com.wallet.crypto.trustapp;end'), '_self', undefined)
+    expect(window.location.assign).toHaveBeenCalledExactlyOnceWith(expect.stringContaining(';package=com.wallet.crypto.trustapp;end'))
+    expect(open).not.toHaveBeenCalled()
   })
 
   it('普通网页和无法读取的旧记录保留原行为及返回值', async () => {
     const result = {} as Window
     const open = vi.fn(() => result)
-    vi.stubGlobal('window', { open })
+    vi.stubGlobal('window', { open, location: { assign: vi.fn() } })
     sdk.getRecentWallets.mockImplementation(() => { throw new Error('blocked storage') })
     const { installAndroidWalletLaunch } = await import('./android-wallet-launch')
     installAndroidWalletLaunch()
@@ -131,10 +135,47 @@ describe('SDK 首次连接和后续签名共用唤起入口', () => {
     expect(open).toHaveBeenCalledWith('https://example.com', '_blank', 'noopener')
   })
 
+  it('MetaMask 原生协议保持连接参数，使用当前页面直接导航', async () => {
+    const open = vi.fn()
+    const assign = vi.fn()
+    vi.stubGlobal('window', { open, location: { assign } })
+    sdk.state.recentWallet = { ...metamask, mobile_link: 'metamask://' }
+    const { installAndroidWalletLaunch } = await import('./android-wallet-launch')
+    installAndroidWalletLaunch()
+    window.open('metamask://wc?uri=wc%3Aabc%402%3FsymKey%3Ddef', '_blank')
+    expect(assign).toHaveBeenCalledExactlyOnceWith('intent://wc?uri=wc%3Aabc%402%3FsymKey%3Ddef#Intent;scheme=metamask;package=io.metamask;end')
+    expect(open).not.toHaveBeenCalled()
+  })
+
+  it('缺少包名保留原打开方式，不发起直接导航', async () => {
+    const open = vi.fn()
+    const assign = vi.fn()
+    vi.stubGlobal('window', { open, location: { assign } })
+    sdk.state.recentWallet = { ...metamask, play_store: '' }
+    const { installAndroidWalletLaunch } = await import('./android-wallet-launch')
+    installAndroidWalletLaunch()
+    window.open(pairing, '_blank', 'noopener')
+    expect(open).toHaveBeenCalledWith(pairing, '_blank', 'noopener')
+    expect(assign).not.toHaveBeenCalled()
+  })
+
+  it('直接导航失败不再重试另一条唤起路径', async () => {
+    const error = new Error('navigation blocked')
+    const open = vi.fn()
+    const assign = vi.fn(() => { throw error })
+    vi.stubGlobal('window', { open, location: { assign } })
+    sdk.state.recentWallet = metamask
+    const { installAndroidWalletLaunch } = await import('./android-wallet-launch')
+    installAndroidWalletLaunch()
+    expect(() => window.open(pairing)).toThrow(error)
+    expect(assign).toHaveBeenCalledOnce()
+    expect(open).not.toHaveBeenCalled()
+  })
+
   it.each(['iPhone', 'Windows NT 10.0'])('%s 不安装 Android 跳转', async (userAgent) => {
     const open = vi.fn()
     vi.stubGlobal('navigator', { userAgent })
-    vi.stubGlobal('window', { open })
+    vi.stubGlobal('window', { open, location: { assign: vi.fn() } })
     const { installAndroidWalletLaunch } = await import('./android-wallet-launch')
     installAndroidWalletLaunch()
     expect(window.open).toBe(open)

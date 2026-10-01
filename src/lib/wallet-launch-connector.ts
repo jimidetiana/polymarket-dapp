@@ -8,12 +8,16 @@ export function withAndroidWalletLaunch(factory: ReturnType<typeof walletConnect
   return (config) => {
     const connector = factory(config)
     const getProvider = connector.getProvider
+    let ready = false
     return {
       ...connector,
       async getProvider(...args) {
         // 在恢复会话或显示钱包列表前安装，避免首次连接与签名使用不同的唤起路径。
-        const { installAndroidWalletLaunch } = await import('./android-wallet-launch')
-        installAndroidWalletLaunch()
+        if (!ready) {
+          const { installAndroidWalletLaunch } = await import('./android-wallet-launch')
+          installAndroidWalletLaunch()
+          ready = true
+        }
         return getProvider.apply(this, args)
       },
     }

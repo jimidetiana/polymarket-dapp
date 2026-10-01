@@ -75,6 +75,10 @@ export function installAndroidWalletLaunch() {
         // 存储被禁用或旧记录损坏时，不阻断 SDK 原本的连接流程。
       }
     }
-    return intent ? open(intent, '_self', features) : open(url, target, features)
+    if (intent) {
+      window.location.assign(intent)
+      return null
+    }
+    return open(url, target, features)
   }
 }
