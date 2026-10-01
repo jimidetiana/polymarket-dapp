@@ -28,6 +28,7 @@ import { PositionRow, TradeRow } from '../components/position-views'
 import { PositionsBoard } from '../components/positions-board'
 import { shortAddr } from '../components/connect-wallet'
 import { exportPositionsImage, downloadImage, type ExportRow } from '../lib/orders-export'
+import { marketHref } from '../lib/market-link'
 import { cn } from '../lib/utils'
 
 /** 一个持仓在勾选集里的键，与列表 key 同源 */
@@ -175,7 +176,7 @@ export default function OrdersPage() {
    * 导出图片对得上。不 memo —— toExportRow 依赖 marketIndex / timeByAsset / 当前语言，值一变
    * 就得重算，列表本身也不长，直接算最省心（lang 变时组件已因 useLang 重渲染，会带上新译名）。
    */
-  const boardRows = held.map((p) => ({ key: posKey(p), row: toExportRow(p) }))
+  const boardRows = held.map((p) => ({ key: posKey(p), row: toExportRow(p), href: marketHref(p) }))
 
   const connected = !!proxyAddr
   const showData = connected && !orders.error && !orders.loading
@@ -304,7 +305,9 @@ export default function OrdersPage() {
               ) : (
                 <div className="divide-y divide-border overflow-hidden rounded-xl border border-border bg-card">
                   {orders.trades.map((t) => (
-                    <TradeRow key={`${t.transactionHash}:${t.asset}:${t.timestamp}`} t={t} showTitle />
+                    <a key={`${t.transactionHash}:${t.asset}:${t.timestamp}`} href={marketHref(t)} className="block hover:bg-muted/50 focus-visible:outline-primary">
+                      <TradeRow t={t} showTitle />
+                    </a>
                   ))}
                 </div>
               )}
@@ -317,7 +320,9 @@ export default function OrdersPage() {
               ) : (
                 <div className="space-y-2">
                   {settled.map((p) => (
-                    <PositionRow key={`${p.asset}:${p.conditionId}`} p={p} settled showTitle />
+                    <a key={`${p.asset}:${p.conditionId}`} href={marketHref(p)} className="block rounded-xl hover:opacity-80 focus-visible:outline-primary">
+                      <PositionRow p={p} settled showTitle />
+                    </a>
                   ))}
                 </div>
               )}

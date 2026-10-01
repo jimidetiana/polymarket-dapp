@@ -20,7 +20,7 @@ import { cn } from '../lib/utils'
 import { euroOdds, groupByMatch, pct, positionTimeText, type ExportRow } from '../lib/orders-export'
 
 /** 一行持仓 + 它在勾选集里的键（与页面的 posKey 同源） */
-export type BoardRow = { key: string; row: ExportRow }
+export type BoardRow = { key: string; row: ExportRow; href: string }
 
 /** 门户网址，印在页脚水印处（与导出图片一致，见 memory 的 frontend-deploy-state） */
 const SITE_URL = 'https://polysoccer.zhangsanfengzhsh.workers.dev/'
@@ -116,16 +116,17 @@ export function PositionsBoard({
             const f = fmt(br.row)
             const on = selected.has(br.key)
             return (
-              <label
+              <div
                 key={br.key}
                 className={cn(
-                  'block cursor-pointer border-b border-border/70 transition-colors last:border-0 hover:bg-muted/50',
+                  'relative block border-b border-border/70 transition-colors last:border-0 hover:bg-muted/50',
                   on && 'bg-primary/[0.05]',
                 )}
               >
+                <a href={br.href} aria-label={`${br.row.match} · ${f.market} · ${f.pick}`} className="absolute inset-y-0 left-10 right-0 focus-visible:outline-primary" />
                 {/* 桌面：对齐表格 */}
                 <div className={cn('hidden items-center gap-2 px-5 py-2.5 sm:grid', GRID)}>
-                  <input type="checkbox" checked={on} onChange={() => onToggle(br.key)} className="size-4 accent-[var(--color-primary)]" />
+                  <input type="checkbox" aria-label={tr('选择导出', 'Select for export')} checked={on} onChange={() => onToggle(br.key)} className="size-4 accent-[var(--color-primary)]" />
                   <span className="truncate text-[12px] font-semibold text-foreground">{f.market}</span>
                   <span className="min-w-0"><Pick text={f.pick} /></span>
                   <span className="truncate font-mono text-[11px] text-muted-foreground">{f.time}</span>
@@ -137,7 +138,7 @@ export function PositionsBoard({
                 {/* 窄屏：两行 */}
                 <div className="px-4 py-2.5 sm:hidden">
                   <div className="flex items-center gap-2">
-                    <input type="checkbox" checked={on} onChange={() => onToggle(br.key)} className="size-4 shrink-0 accent-[var(--color-primary)]" />
+                    <input type="checkbox" aria-label={tr('选择导出', 'Select for export')} checked={on} onChange={() => onToggle(br.key)} className="size-4 shrink-0 accent-[var(--color-primary)]" />
                     <span className="min-w-0 flex-1 truncate text-[12px] font-semibold text-foreground">{f.market}</span>
                     <span className="shrink-0 font-mono text-[12px] font-bold text-foreground">{f.cost}</span>
                   </div>
@@ -148,7 +149,7 @@ export function PositionsBoard({
                     <span className="font-mono text-[10px] text-muted-foreground/80">{f.time}</span>
                   </div>
                 </div>
-              </label>
+              </div>
             )
           })}
         </div>

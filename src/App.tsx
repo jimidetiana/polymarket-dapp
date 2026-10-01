@@ -26,6 +26,9 @@
  * → resolveTemplate → 画布。没有后端，没有库。
  */
 import { Suspense, lazy, useCallback, useEffect, useMemo, useState } from 'react'
+import { useQuery } from '@tanstack/react-query'
+import { fetchMarketEventIds } from './lib/gamma'
+import { parseMarketLink } from './lib/market-link'
 import { WalletMenu } from './components/connect-wallet'
 import { MarketGraphCanvas } from './components/market-graph-canvas'
 import { MatchPicker } from './components/match-picker'
@@ -136,10 +139,10 @@ export default function App() {
     )
   }
 
-  return <GraphPage />
+  return <GraphPage key={hash} target={parseMarketLink(hash)} />
 }
 
-function GraphPage() {
+function GraphPage({ target }: { target: ReturnType<typeof parseMarketLink> }) {
   const lang = useLang()
   const { matches, loading, error, network, reload } = useSoccerMatches()
   /**
@@ -148,7 +151,7 @@ function GraphPage() {
    * 在这一层取而不是各组件自己取：同一份数据取两次，会出现「图上有标记、列表没有」
    * 这种自相矛盾（两次请求的时机不同）。拿不到就是空索引，不挡界面。
    */
-  const { index: positions } = usePositions()
+  const { index: positions, loading: positionsLoading } = usePositions()
   /**
    * 有仓位但**不在时间窗内**的比赛，按赛事 id 单独捞回来。
    *
@@ -156,7 +159,14 @@ function GraphPage() {
    * 踢完的比赛早就掉出窗口了，列表里没有那一行，持仓徽标也就没有地方挂。
    * 合并规则见 lib/match-list.ts 的 mergeMatchLists（按标题去重、eventIds 取并集）。
    */
-  const extraMatches = usePositionMatches(positions.eventIds)
+  const { matches: extraMatches, loading: extraLoading } = usePositionMatches(positions.eventIds)
+  const targetEvents = useQuery({
+    queryKey: ['market-event-ids', target?.conditionId],
+    queryFn: () => fetchMarketEventIds(target!.conditionId),
+    enabled: !!target?.conditionId,
+    staleTime: 5 * 60 * 1000,
+  })
+  const [targetHandled, setTargetHandled] = useState(false)
   const allMatches = useMemo(() => mergeMatchLists(matches, extraMatches), [matches, extraMatches])
   const [matchId, setMatchId] = useState<string | null>(null)
   const [priceMode, setPriceMode] = useState<PriceMode>('prob')
@@ -210,10 +220,13 @@ function GraphPage() {
    * 比赛上；等它们回来时 matchId 早就定了，不该被改。
    */
   useEffect(() => {
-    if (matchId == null && matches.length > 0) setMatchId(defaultMatchId(matches))
-  }, [matches, matchId])
+    if (!target && matchId == null && matches.length > 0) setMatchId(defaultMatchId(matches))
+  }, [matches, matchId, target])
 
-  const match = allMatches.find((m) => m.id === matchId) ?? null
+  const targetMatch = target && !targetHandled
+    ? allMatches.find((m) => m.eventIds.some((id) => targetEvents.data?.includes(id)))
+    : null
+  const match = allMatches.find((m) => m.id === matchId) ?? targetMatch ?? null
   const {
     graph,
     marketsLoading,
@@ -225,6 +238,26 @@ function GraphPage() {
     book,
     tickByToken,
   } = useMarketGraph(match)
+
+  const targetNode = target && graph?.nodes.find((n) =>
+    n.conditionId === target.conditionId && n.sides.some((s) => s.tokenId === target.tokenId),
+  )
+  const targetSlot = targetNode && (
+    slots.find((s) => s.nodeId === targetNode.id && s.tokenId === target?.tokenId)
+    ?? slots.find((s) => s.nodeId === targetNode.id)
+  )
+  const targetLoading = loading || positionsLoading || extraLoading || targetEvents.isLoading || marketsLoading
+  const targetMissing = !!target && !targetHandled && !targetLoading && (!targetMatch || !targetSlot)
+
+  useEffect(() => {
+    if (!target || targetHandled || !targetMatch || !targetNode || !targetSlot) return
+    setMatchId(targetMatch.id)
+    setSelectedKey(targetSlot.key)
+    setPickedKey(targetSlot.key)
+    setPickedSideName(targetNode.sides.find((s) => s.tokenId === target.tokenId)!.name)
+    setOrderOpen(true)
+    setTargetHandled(true)
+  }, [target, targetHandled, targetMatch, targetNode, targetSlot])
 
   /**
    * 存的是**槽位的 key，不是槽位对象**。
@@ -396,9 +429,10 @@ function GraphPage() {
           <div className="p-3">
             <MatchPicker
               matches={allMatches}
-              matchId={matchId}
+              matchId={match?.id ?? null}
               positionEventIds={positions.eventIds}
               onPick={(id) => {
+                setTargetHandled(true)
                 setMatchId(id)
                 setSelectedKey(null)
                 setPickedKey(null)
@@ -415,7 +449,14 @@ function GraphPage() {
             （border-r 才是一条通到底的分隔线，抽屉盖上顶栏时也才不留缝），
             所以那一圈的间距只能由画布这边让出来 */}
         <section className="m-3 flex min-h-0 min-w-0 flex-1 rounded-lg border border-border bg-card">
-          {loading ? (
+          {target && !targetHandled && targetLoading ? (
+            <Centered>{tr('正在查找盘口…', 'Finding market…')}</Centered>
+          ) : targetMissing ? (
+            <Centered>
+              <p role="status">{tr('盘口不存在', 'Market not found')}</p>
+              <a href="#/orders" className="text-primary hover:underline">{tr('返回订单', 'Back to orders')}</a>
+            </Centered>
+          ) : loading ? (
             <Centered>{tr('正在拉取比赛…', 'Loading matches…')}</Centered>
           ) : error && matches.length === 0 ? (
             <Centered>

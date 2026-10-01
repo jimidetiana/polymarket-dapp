@@ -401,6 +401,18 @@ export function mergeMarkets(events: readonly GammaEvent[]): GammaMarket[] {
   return out
 }
 
+/** 按盘口精确查询所属赛事，不把查询结果自动补进比赛列表。 */
+export async function fetchMarketEventIds(conditionId: string): Promise<string[]> {
+  if (!conditionId) return []
+  const markets = await gammaGet<(GammaMarket & { events?: GammaEvent[] })[]>('/markets', {
+    condition_ids: [conditionId],
+  })
+  if (!Array.isArray(markets)) throw new GammaError(NOT_ARRAY(), false)
+  return markets
+    .filter((m) => m.conditionId === conditionId)
+    .flatMap((m) => (m.events ?? []).map((e) => String(e.id)))
+}
+
 /**
  * 一场比赛的全部盘口：按子赛事 id 一次拉回再合并。
  *
