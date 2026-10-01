@@ -15,7 +15,7 @@
  *
  *   goals   中间三个（进球 / 主队进球 / 客队进球）——**没有对应盘口**，
  *           显示由盘口反推出的进球数（见 inferGoalCounts）。
- *   market  其余 23 个，各绑一个真实盘口的**某一侧**，显示该侧价格。
+ *   market  其余 44 个，各绑一个真实盘口的**某一侧**，显示该侧价格。
  *   缺失     某场比赛没挂这条线时槽位保留但标记为空，位置不动——
  *           位置固定才是「同一套标准」的意思。
  *
@@ -31,7 +31,7 @@ import { getLang } from '../lib/i18n'
 
 /**
  * 槽位标签的英文版。从 key 推而不是每个槽位再写一个字段：key 的形状是固定的
- * （total_2.5 / home_1.5 / sp_away_-1.5 …），26 行几乎一样的 labelEn 只是噪音。
+ * （total_2.5 / home_1.5 / sp_away_-1.5 …），重复维护 labelEn 只是噪音。
  */
 function slotLabel(slot: TemplateSlot): string {
   if (getLang() !== 'en') return slot.label
@@ -85,48 +85,22 @@ export interface TemplateSlot {
 }
 
 /**
- * 26 个槽位。
+ * 固定槽位关于 x = 693 镜像：全场大小球沿两列向上交替，单队大小球向两翼延伸，
+ * 让球沿四列向下延伸。各梯子的步长固定，不能按某场比赛的盘口数量改变位置。
  *
- * ## 坐标是**规整过**的设计稿，不是原样照抄
+ * 中心「主队进球 / 客队进球」带 converge：窄屏时向中轴收并上移，
+ * 但不能挤到其他节点；安全回退由 lib/layout.ts 处理。
  *
- * 原设计稿的坐标是人手摆的，有三类不齐：
- *
- *   1. **梯子**：右列 x 在 813 / 818 之间跳，纵向步长 145 / 163 / 206 三种；
- *      整条梯子还偏在轴线左侧约 10（中心三节点和「平」都在 x=693）。
- *   2. **两翼不是镜像**：左侧步长 (205, 128)，右侧 (197, 90) —— 同一把梯子
- *      两边粗细不同；最外沿离轴线也不等（786 vs 726）。
- *   3. **行内错位**：ml_home 比同排另两个高 9，sp_home_-1.5 高 15，
- *      sp_away_-2.5 高 9；让球内侧两列偏离轴线也不等（-134 / +146）。
- *
- * 现在全部按 **x = 693 轴线镜像 + 等步长**重排，成对的槽位 x 之和恒为 1386。
- * 对称性由 template.test.ts 断言 —— 以后手改坐标会被测试挡住。
- *
- * **只动坐标，不动拓扑**：槽位数、连线表、每个槽位绑哪张盘全都没变，
- * 「谁在谁上面 / 左边」也没变，换的只是疏密。这就是「总体结构不变」的意思。
- *
- * ## 为什么只有中心两条腿带 converge
- *
- * 上面那套坐标是**等比例**铺开的，但画布不是等比缩放 —— lib/layout.ts 把 x 和
- * y 各自归一化后**独立**拉伸。后果是容器一窄，中心「进球 → 主队进球 / 客队进球」
- * 那个三角横向先塌陷、纵向照铺，两条腿变得又长又挤。而两翼和梯子本来就是
- * 「横向越开越好看」的结构，收它们反而错，所以只给这两个槽位一个窄屏目标：
- * 向中轴收（±126 → ±86）**并上移**（落差 171 → 110），把纵向让给下面的胜平负
- * 和让球两行。
- *
- * 强度随宽高比连续变化（不是开关），且带安全回退 —— 收束不能把节点挤到重叠，
- * 退到 0 就是保持原样。两件事都在 layout.ts 里，见那边的说明。
- *
- * 包围盒刻意保持与设计稿一致（x 跨度 1512、y 跨度 1962，原 1512 / 1963）。
- * 因为排布是先把坐标归一再按容器拉伸，**包围盒比例决定节点疏密**，跨度一动
- * 节点大小就跟着变。对齐前后最近两点间距 211.8 → 212.4，所以圆半径基本不动
- * —— 这次重排不会让节点变大或变小。
- *
- * Y 已是 SVG 向下坐标（设计稿 PDF 的 Y 向上，翻转式 svgY = 1775 − pdfY）。
- * 后补的 4 个（总进球 4.5 / 5.5、主客队总进球 2.5）本来就是按梯子向量外推的，
- * 重排后自然落在同一条等步长梯子上。
+ * Y 是 SVG 向下坐标，新增档位沿原有梯子等步长外推。
  */
 export const TEMPLATE_SLOTS: TemplateSlot[] = [
   // ---- 全场大小球梯子（图的上半），自下而上左右交替。两列 561 / 825，步长 185 ----
+  { key: 'total_8.5', label: '总进球 8.5', kind: 'market', x: 561, y: -854,
+    bind: { family: 'ou', period: 'ft', subject: 'match', line: 8.5, side: 'over' } },
+  { key: 'total_7.5', label: '总进球 7.5', kind: 'market', x: 825, y: -669,
+    bind: { family: 'ou', period: 'ft', subject: 'match', line: 7.5, side: 'over' } },
+  { key: 'total_6.5', label: '总进球 6.5', kind: 'market', x: 561, y: -484,
+    bind: { family: 'ou', period: 'ft', subject: 'match', line: 6.5, side: 'over' } },
   { key: 'total_5.5', label: '总进球 5.5', kind: 'market', x: 825, y: -299,
     bind: { family: 'ou', period: 'ft', subject: 'match', line: 5.5, side: 'over' } },
   { key: 'total_4.5', label: '总进球 4.5', kind: 'market', x: 561, y: -114,
@@ -141,6 +115,18 @@ export const TEMPLATE_SLOTS: TemplateSlot[] = [
     bind: { family: 'ou', period: 'ft', subject: 'match', line: 0.5, side: 'over' } },
 
   // ---- 单队大小球（两翼），从中心向外上方延伸。两侧同一把梯子，步长 (189, 109) ----
+  { key: 'home_5.5', label: '主队总进球 5.5', kind: 'market', x: -630, y: 363,
+    bind: { family: 'ou', period: 'ft', subject: 'home', line: 5.5, side: 'over' } },
+  { key: 'away_5.5', label: '客队总进球 5.5', kind: 'market', x: 2016, y: 363,
+    bind: { family: 'ou', period: 'ft', subject: 'away', line: 5.5, side: 'over' } },
+  { key: 'home_4.5', label: '主队总进球 4.5', kind: 'market', x: -441, y: 472,
+    bind: { family: 'ou', period: 'ft', subject: 'home', line: 4.5, side: 'over' } },
+  { key: 'away_4.5', label: '客队总进球 4.5', kind: 'market', x: 1827, y: 472,
+    bind: { family: 'ou', period: 'ft', subject: 'away', line: 4.5, side: 'over' } },
+  { key: 'home_3.5', label: '主队总进球 3.5', kind: 'market', x: -252, y: 581,
+    bind: { family: 'ou', period: 'ft', subject: 'home', line: 3.5, side: 'over' } },
+  { key: 'away_3.5', label: '客队总进球 3.5', kind: 'market', x: 1638, y: 581,
+    bind: { family: 'ou', period: 'ft', subject: 'away', line: 3.5, side: 'over' } },
   { key: 'home_2.5', label: '主队总进球 2.5', kind: 'market', x: -63, y: 690,
     bind: { family: 'ou', period: 'ft', subject: 'home', line: 2.5, side: 'over' } },
   { key: 'away_2.5', label: '客队总进球 2.5', kind: 'market', x: 1449, y: 690,
@@ -171,7 +157,7 @@ export const TEMPLATE_SLOTS: TemplateSlot[] = [
     bind: { family: 'moneyline', period: 'ft', role: 'away', side: 'yes' } },
 
   // ---- 让球（图的下半）。四列 226 / 553 / 833 / 1160（关于轴线 ±467 / ±140），
-  //      两行 1411 / 1663。line 以 subject 视角，side 决定取哪侧价 ----
+  //      五行从 1411 起，步长 252。line 以 subject 视角，side 决定取哪侧价 ----
   { key: 'sp_home_-1.5', label: '主队 -1.5', kind: 'market', x: 226, y: 1411,
     bind: { family: 'spread', period: 'ft', subject: 'home', line: -1.5, side: 'home' } },
   { key: 'sp_home_+1.5', label: '主队 +1.5', kind: 'market', x: 553, y: 1411,
@@ -188,9 +174,40 @@ export const TEMPLATE_SLOTS: TemplateSlot[] = [
     bind: { family: 'spread', period: 'ft', subject: 'away', line: -2.5, side: 'away' } },
   { key: 'sp_away_+2.5', label: '客队 +2.5', kind: 'market', x: 1160, y: 1663,
     bind: { family: 'spread', period: 'ft', subject: 'away', line: 2.5, side: 'away' } },
+  { key: 'sp_home_-3.5', label: '主队 -3.5', kind: 'market', x: 226, y: 1915,
+    bind: { family: 'spread', period: 'ft', subject: 'home', line: -3.5, side: 'home' } },
+  { key: 'sp_home_+3.5', label: '主队 +3.5', kind: 'market', x: 553, y: 1915,
+    bind: { family: 'spread', period: 'ft', subject: 'home', line: 3.5, side: 'home' } },
+  { key: 'sp_away_-3.5', label: '客队 -3.5', kind: 'market', x: 833, y: 1915,
+    bind: { family: 'spread', period: 'ft', subject: 'away', line: -3.5, side: 'away' } },
+  { key: 'sp_away_+3.5', label: '客队 +3.5', kind: 'market', x: 1160, y: 1915,
+    bind: { family: 'spread', period: 'ft', subject: 'away', line: 3.5, side: 'away' } },
+  { key: 'sp_home_-4.5', label: '主队 -4.5', kind: 'market', x: 226, y: 2167,
+    bind: { family: 'spread', period: 'ft', subject: 'home', line: -4.5, side: 'home' } },
+  { key: 'sp_home_+4.5', label: '主队 +4.5', kind: 'market', x: 553, y: 2167,
+    bind: { family: 'spread', period: 'ft', subject: 'home', line: 4.5, side: 'home' } },
+  { key: 'sp_away_-4.5', label: '客队 -4.5', kind: 'market', x: 833, y: 2167,
+    bind: { family: 'spread', period: 'ft', subject: 'away', line: -4.5, side: 'away' } },
+  { key: 'sp_away_+4.5', label: '客队 +4.5', kind: 'market', x: 1160, y: 2167,
+    bind: { family: 'spread', period: 'ft', subject: 'away', line: 4.5, side: 'away' } },
+  { key: 'sp_home_-5.5', label: '主队 -5.5', kind: 'market', x: 226, y: 2419,
+    bind: { family: 'spread', period: 'ft', subject: 'home', line: -5.5, side: 'home' } },
+  { key: 'sp_home_+5.5', label: '主队 +5.5', kind: 'market', x: 553, y: 2419,
+    bind: { family: 'spread', period: 'ft', subject: 'home', line: 5.5, side: 'home' } },
+  { key: 'sp_away_-5.5', label: '客队 -5.5', kind: 'market', x: 833, y: 2419,
+    bind: { family: 'spread', period: 'ft', subject: 'away', line: -5.5, side: 'away' } },
+  { key: 'sp_away_+5.5', label: '客队 +5.5', kind: 'market', x: 1160, y: 2419,
+    bind: { family: 'spread', period: 'ft', subject: 'away', line: 5.5, side: 'away' } },
 ]
 
-/** 设计稿的 22 条连线加后补的 4 条，按槽位 key */
+export function isOuterSlot(slot: TemplateSlot): boolean {
+  const bind = slot.bind
+  if (bind?.line == null) return false
+  if (bind.family === 'ou') return bind.line > (bind.subject === 'match' ? 6.5 : 3.5)
+  return bind.family === 'spread' && Math.abs(bind.line) > 3.5
+}
+
+/** 固定模板连线，按槽位 key */
 export const TEMPLATE_EDGES: Array<[string, string]> = [
   // 中心向两侧展开
   ['goals_total', 'goals_home'],
@@ -202,13 +219,22 @@ export const TEMPLATE_EDGES: Array<[string, string]> = [
   ['total_2.5', 'total_3.5'],
   ['total_3.5', 'total_4.5'],
   ['total_4.5', 'total_5.5'],
+  ['total_5.5', 'total_6.5'],
+  ['total_6.5', 'total_7.5'],
+  ['total_7.5', 'total_8.5'],
   // 单队进球 → 单队大小球
   ['goals_home', 'home_0.5'],
   ['home_0.5', 'home_1.5'],
   ['home_1.5', 'home_2.5'],
+  ['home_2.5', 'home_3.5'],
+  ['home_3.5', 'home_4.5'],
+  ['home_4.5', 'home_5.5'],
   ['goals_away', 'away_0.5'],
   ['away_0.5', 'away_1.5'],
   ['away_1.5', 'away_2.5'],
+  ['away_2.5', 'away_3.5'],
+  ['away_3.5', 'away_4.5'],
+  ['away_4.5', 'away_5.5'],
   // 单队进球 → 胜平负
   ['goals_home', 'ml_home'],
   ['goals_home', 'ml_draw'],
@@ -224,6 +250,18 @@ export const TEMPLATE_EDGES: Array<[string, string]> = [
   ['sp_home_+1.5', 'sp_home_+2.5'],
   ['sp_away_-1.5', 'sp_away_-2.5'],
   ['sp_away_+1.5', 'sp_away_+2.5'],
+  ['sp_home_-2.5', 'sp_home_-3.5'],
+  ['sp_home_+2.5', 'sp_home_+3.5'],
+  ['sp_away_-2.5', 'sp_away_-3.5'],
+  ['sp_away_+2.5', 'sp_away_+3.5'],
+  ['sp_home_-3.5', 'sp_home_-4.5'],
+  ['sp_home_+3.5', 'sp_home_+4.5'],
+  ['sp_away_-3.5', 'sp_away_-4.5'],
+  ['sp_away_+3.5', 'sp_away_+4.5'],
+  ['sp_home_-4.5', 'sp_home_-5.5'],
+  ['sp_home_+4.5', 'sp_home_+5.5'],
+  ['sp_away_-4.5', 'sp_away_-5.5'],
+  ['sp_away_+4.5', 'sp_away_+5.5'],
 ]
 
 /** 队名归一：库里与 outcome 里的写法常不一致（FC/CF/SC/AFC 后缀） */

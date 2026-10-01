@@ -18,9 +18,9 @@ import {
   convergeStrength,
   layoutSlots,
 } from './layout'
-import { TEMPLATE_SLOTS } from '../graph/template'
+import { isOuterSlot, TEMPLATE_SLOTS } from '../graph/template'
 
-/** 真实的 26 个槽位，只取排布需要的字段 */
+/** 模板槽位，只取排布需要的字段 */
 const SLOTS = TEMPLATE_SLOTS.map((s) => ({ key: s.key, x: s.x, y: s.y }))
 
 /** 几种真实容器：桌面、笔记本（原来会退 width 模式的那个）、平板竖屏、手机、超宽、矮宽 */
@@ -69,28 +69,67 @@ test('任何容器比例下节点都不重叠', () => {
   }
 })
 
-test('半径由最小间距反推，夹在 [MIN_R, MAX_R]', () => {
+test('折叠后按剩余节点重新铺满，节点变大且各尺寸不重叠', () => {
+  const compact = TEMPLATE_SLOTS.filter((s) => !isOuterSlot(s))
+  for (const [name, c] of Object.entries(ALL)) {
+    const { slots, r, viewBox } = layoutSlots(compact, c)
+    assert.equal(viewBox.w, c.w)
+    assert.equal(viewBox.h, c.h)
+    assert.ok(r > layoutSlots(TEMPLATE_SLOTS, c).r, `${name} 折叠后应释放空间给剩余节点`)
+    for (let i = 0; i < slots.length; i += 1) {
+      const s = slots[i]
+      assert.ok(s.x >= r && s.x + r <= c.w && s.y >= r && s.y + r <= c.h, `${name} ${s.key} 出界`)
+      for (let j = i + 1; j < slots.length; j += 1) {
+        const d = Math.hypot(s.x - slots[j].x, s.y - slots[j].y)
+        assert.ok(d >= 2 * r - 1e-6, `${name} ${s.key} 与 ${slots[j].key} 重叠`)
+      }
+    }
+  }
+})
+
+test('半径为正且不超过 MAX_R，窄屏允许缩小以避免重叠', () => {
   for (const [name, c] of Object.entries(ALL)) {
     const { r } = layoutSlots(SLOTS, c)
-    assert.ok(r >= MIN_R, `${name} r=${r} 低于下限`)
+    assert.ok(r > 0, `${name} r=${r} 必须为正`)
     assert.ok(r <= MAX_R, `${name} r=${r} 超过上限`)
   }
+  assert.ok(layoutSlots(SLOTS, PHONE).r < MIN_R, '扩展模板在手机上不能强撑最小半径')
 })
 
 test('相对方位在所有屏幕上保持一致（同一套标准的核心）', () => {
   // 取几对有明确上下/左右关系的槽位，断言在每种容器里关系都不变
   const above: Array<[string, string]> = [
+    ['total_8.5', 'total_7.5'],
+    ['total_7.5', 'total_6.5'],
+    ['total_6.5', 'total_5.5'],
     ['total_5.5', 'total_4.5'], // 大小球梯子自上而下
     ['total_4.5', 'total_3.5'],
     ['total_3.5', 'total_2.5'],
     ['total_2.5', 'total_1.5'],
+    ['home_5.5', 'home_4.5'],
+    ['home_4.5', 'home_3.5'],
+    ['home_3.5', 'home_2.5'],
+    ['away_5.5', 'away_4.5'],
+    ['away_4.5', 'away_3.5'],
+    ['away_3.5', 'away_2.5'],
     ['home_2.5', 'home_1.5'], // 两翼向外上方
     ['away_2.5', 'away_1.5'],
     ['goals_total', 'goals_home'], // 中心 → 单队
     ['ml_home', 'sp_home_-1.5'], // 胜平负 → 让球
     ['sp_home_-1.5', 'sp_home_-2.5'], // 让球梯子
+    ['sp_home_-2.5', 'sp_home_-3.5'],
+    ['sp_home_-3.5', 'sp_home_-4.5'],
+    ['sp_home_-4.5', 'sp_home_-5.5'],
+    ['sp_away_+2.5', 'sp_away_+3.5'],
+    ['sp_away_+3.5', 'sp_away_+4.5'],
+    ['sp_away_+4.5', 'sp_away_+5.5'],
   ]
   const leftOf: Array<[string, string]> = [
+    ['home_5.5', 'home_4.5'],
+    ['away_4.5', 'away_5.5'],
+    ['sp_home_-5.5', 'sp_home_+5.5'],
+    ['sp_home_+5.5', 'sp_away_-5.5'],
+    ['sp_away_-5.5', 'sp_away_+5.5'],
     ['home_2.5', 'home_1.5'], // 主队梯子往左爬
     ['away_1.5', 'away_2.5'], // 客队梯子往右爬
     ['home_1.5', 'away_1.5'], // 主队在左、客队在右
@@ -121,9 +160,9 @@ test('宽屏横向铺开：容器越宽，横向跨度越大', () => {
   assert.ok(spanX(DESKTOP) > spanX(LAPTOP), '桌面应比笔记本铺得更开')
 })
 
-test('笔记本 1366x768 不再需要滚动，且半径可读', () => {
-  // 回归：这个尺寸原来会退 width 模式，SVG 高度撑到 1600+px
-  const { viewBox, r } = layoutSlots(SLOTS, LAPTOP)
+test('笔记本默认折叠视图不需要滚动，且半径可读', () => {
+  const compact = TEMPLATE_SLOTS.filter((s) => !isOuterSlot(s))
+  const { viewBox, r } = layoutSlots(compact, LAPTOP)
   assert.equal(viewBox.h, LAPTOP.h, '高度不应超出容器')
   assert.ok(r > MIN_R, `r=${r} 应明显高于下限`)
 })

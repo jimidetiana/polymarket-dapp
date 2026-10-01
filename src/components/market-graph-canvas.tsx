@@ -4,7 +4,7 @@
  * ## 为什么不是按数据长出来的布局
  *
  * 需求要的是「所有比赛采用同一套标准，形成一张网状图」。所以骨架与具体
- * 比赛无关：26 个槽位在每场比赛都在同一位置，看第二场时不用重新找方位。
+ * 比赛无关：所有槽位在每场比赛都在同一位置，看第二场时不用重新找方位。
  * 数据只决定槽位里填什么。
  *
  * 上一版按 family 分列、按 line 排行，等于把网状图摊成了表格——位置由
@@ -15,7 +15,7 @@
  *   推断进球（3 个） 进球 / 主队进球 / 客队进球。**没有对应盘口**，
  *                    显示由大小球梯子反推出的进球数——是推断值，不是报价。
  *                    主队/客队推断节点与市场节点同色；总进球用独立色。
- *   盘口（23 个）    各绑一张真实盘口的某一侧，品字形显示该侧的卖价与买价。
+ *   盘口             各绑一张真实盘口的某一侧，品字形显示该侧的卖价与买价。
  *                    颜色按主客队区分：主队暖色、客队冷色、中性盘口灰/蓝。
  *   绿色             其中的**进球盘在推断比分越过该线之后**变绿，表示已打出。
  *                 这是整张图随比赛推进最主要的动态。
@@ -24,7 +24,7 @@
  * 「同一套标准」的意思，缺哪条线要能一眼看出来，而不是让图变形。
  *
  * 颜色只编这两件事（报价 vs 推断、已打出 vs 未打出），不再用颜色编进球
- * 敏感度：这 23 个槽位按构造全都受进球影响，再叠一层深浅只会互相打架。
+ * 敏感度：这些盘口槽位按构造全都受进球影响，再叠一层深浅只会互相打架。
  * 敏感度放在悬浮详情里。
  *
  * ## 为什么节点上不显示中价
@@ -46,6 +46,7 @@ import { PALETTES, DEFAULT_PALETTE, type TeamPaletteKey } from '@/lib/palette'
 import { positionKind, slotPositionMark, type PositionIndex, type SlotPositionMark } from '@/lib/positions'
 import type { GraphGoalCounts, GraphNode, GraphSlot, MarketGraph } from '@/types/market-graph'
 import { BASE_R, layoutSlots } from '@/lib/layout'
+import { isOuterSlot } from '@/graph/template'
 import {
   IDENTITY,
   MIN_K,
@@ -196,6 +197,11 @@ export function MarketGraphCanvas({
   const palette = PALETTES[paletteKey]
   useLang()
   const [hover, setHover] = useState<GraphSlot | null>(null)
+  const [expanded, setExpanded] = useState(false)
+  const visibleSlots = useMemo(
+    () => expanded ? slots : slots.filter((s) => !isOuterSlot(s)),
+    [slots, expanded],
+  )
 
   // 图例用的队名：有中文用中文，否则回退英文。类型保证是 string，可能为空串。
   const homeTeam = graph.homeTeamZh || graph.homeTeamEn
@@ -203,14 +209,14 @@ export function MarketGraphCanvas({
 
   /** 与选中节点直接相连的槽位，用来做聚焦高亮 */
   const neighbours = useMemo(() => {
-    if (!selectedKey) return null
+    if (!selectedKey || !visibleSlots.some((s) => s.key === selectedKey)) return null
     const set = new Set<string>([selectedKey])
     for (const [a, b] of templateEdges) {
       if (a === selectedKey) set.add(b)
       if (b === selectedKey) set.add(a)
     }
     return set
-  }, [selectedKey, templateEdges])
+  }, [selectedKey, templateEdges, visibleSlots])
 
   const nodeById = useMemo(() => {
     const m = new Map<string, GraphNode>()
@@ -223,8 +229,8 @@ export function MarketGraphCanvas({
    * ——让球盘两侧各占一个槽位，各自标即可，不该在对面重复标一次。
    */
   const displayedTokens = useMemo(
-    () => new Set(slots.map((s) => s.tokenId).filter((t): t is string => !!t)),
-    [slots],
+    () => new Set(visibleSlots.map((s) => s.tokenId).filter((t): t is string => !!t)),
+    [visibleSlots],
   )
 
   const [wrapRef, size] = useElementSize<HTMLDivElement>()
@@ -237,8 +243,8 @@ export function MarketGraphCanvas({
    * 不再需要在「一屏看全」和「贴宽滚动」之间选，也就没有 fit 模式了。
    */
   const { slots: placed, scale: nodeScale, viewBox: box } = useMemo(
-    () => layoutSlots(slots, size),
-    [slots, size],
+    () => layoutSlots(visibleSlots, size),
+    [visibleSlots, size],
   )
 
   /** 重排后的坐标查表，连线要用 */
@@ -706,17 +712,33 @@ export function MarketGraphCanvas({
         和缩放控件一样放在容器里而不是 SVG 里：SVG 里的按钮会跟着内容一起缩放
         平移，放大后自己就跑出画面了。
       */}
-      {onTogglePriceMode && (
+      <div
+        className="pointer-events-auto absolute right-3 top-3 z-40 flex flex-col items-end gap-2"
+        onPointerDown={(e) => e.stopPropagation()}
+      >
+        {onTogglePriceMode && (
+          <button
+            type="button"
+            onClick={onTogglePriceMode}
+            className="rounded-md border border-border bg-popover/90 px-2 py-1 text-[11px] text-foreground/80 shadow-sm backdrop-blur-sm hover:bg-muted"
+          >
+            {priceModeLabel(priceMode)}
+          </button>
+        )}
         <button
           type="button"
-          onClick={onTogglePriceMode}
-          // 悬浮层要自己抢回指针事件（缩放控件用的是同一个写法）：根节点在
-          // pointerdown 上处理拖拽平移，按钮上的一次点击不该被当成拖图
-          className="pointer-events-auto absolute right-3 top-3 z-40 rounded-md border border-border bg-popover/90 px-2 py-1 text-[11px] text-foreground/80 shadow-sm backdrop-blur-sm hover:bg-muted"
+          aria-expanded={expanded}
+          onClick={() => {
+            setExpanded((value) => !value)
+            setHover(null)
+            setView(IDENTITY)
+            onSelect(null)
+          }}
+          className="rounded-md border border-border bg-popover/90 px-2 py-1.5 text-[11px] text-foreground/80 shadow-sm backdrop-blur-sm hover:bg-muted"
         >
-          {priceModeLabel(priceMode)}
+          {expanded ? tr('折叠盘口', 'Collapse markets') : tr('展示更多', 'Show more')}
         </button>
-      )}
+      </div>
 
       {/*
         缩放控件。放在容器里而不是 SVG 里：SVG 内的按钮会跟内容一起缩放和平移，

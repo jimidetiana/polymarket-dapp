@@ -76,10 +76,10 @@ export const R_OF_GAP = 0.42
 export const MAX_R = BASE_R
 
 /**
- * 节点半径的下限。
+ * 节点半径的初始值与退化输入的兜底值。
  *
- * 低于这个值标签糊成一团，此时不再缩小节点（宁可让边距变紧），
- * 剩下的可读性交给捏合放大 —— 手机窄屏本来就得放大，见 viewport.ts。
+ * 密集模板在窄屏上必须允许更小的半径，否则节点会重叠，放大后仍无法分开。
+ * 全图模式优先保持间距，可读性交给捏合放大（见 viewport.ts）。
  */
 export const MIN_R = 22
 
@@ -176,8 +176,7 @@ export function convergeStrength(w: number, h: number): number {
  * 按强度 t 把带目标的槽位向目标靠拢，并保证没有任何一对被挤到重叠。
  *
  * 从想要的强度往下逐档试，第一个通过的档就用它。不用二分（不假设「强度越小
- * 越安全」—— 收束点对非收束点的距离未必单调），逐档线性试更省心：24 档 ×
- * 325 对也就是几千次距离计算，拖窗口时每帧跑一次也无感。
+ * 越安全」—— 收束点对非收束点的距离未必单调）。
  *
  * 所有档都不通过时返回原位（base），也就是退回今天这个布局 —— 最坏情况不会
  * 比现在差。
@@ -249,7 +248,7 @@ export function layoutSlots<T extends Pt & { converge?: Pt }>(
     const innerH = Math.max(1, h - pad * 2)
     // 归一坐标乘可用区 = 实际像素间距，再取最近的一对
     const gap = minGap(unit.map((p) => ({ x: p.x * innerW, y: p.y * innerH })))
-    r = Math.min(MAX_R, Math.max(MIN_R, gap * R_OF_GAP))
+    r = Math.min(MAX_R, gap > 0 ? gap * R_OF_GAP : MIN_R)
   }
 
   const pad = r * EDGE_PAD_OF_R

@@ -10,6 +10,7 @@ import { test } from 'vitest'
 import assert from 'node:assert/strict'
 import { buildMarketGraph, applyLivePrices, type GraphMarketInput } from './graph.js'
 import {
+  isOuterSlot,
   isSlotHit,
   resolveTemplate,
   TEMPLATE_EDGES,
@@ -68,11 +69,38 @@ const NO_GOALS = { total: null, home: null, away: null }
 
 // ==================== 模板本身 ====================
 
-test('26 个槽位、26 条边：设计稿的 22 + 后补的 4', () => {
-  assert.equal(TEMPLATE_SLOTS.length, 26)
-  assert.equal(TEMPLATE_EDGES.length, 26)
+test('47 个槽位、47 条边覆盖总进球 8.5、单队 5.5 和让球 ±5.5', () => {
+  assert.equal(TEMPLATE_SLOTS.length, 47)
+  assert.equal(TEMPLATE_EDGES.length, 47)
   assert.equal(TEMPLATE_SLOTS.filter((s) => s.kind === 'goals').length, 3)
-  assert.equal(TEMPLATE_SLOTS.filter((s) => s.kind === 'market').length, 23)
+  assert.equal(TEMPLATE_SLOTS.filter((s) => s.kind === 'market').length, 44)
+})
+
+test('折叠恰好隐藏七条支线各自最外侧的两档，保留全部中心和胜平负', () => {
+  for (const prefix of ['total_', 'home_', 'away_', 'sp_home_-', 'sp_home_+', 'sp_away_-', 'sp_away_+']) {
+    const branch = TEMPLATE_SLOTS.filter((s) => s.key.startsWith(prefix))
+    const outer = [...branch].sort((a, b) => Math.abs(b.bind!.line!) - Math.abs(a.bind!.line!)).slice(0, 2)
+    assert.deepEqual(branch.filter(isOuterSlot).map((s) => s.key).sort(), outer.map((s) => s.key).sort(), prefix)
+  }
+  const visible = TEMPLATE_SLOTS.filter((s) => !isOuterSlot(s))
+  assert.equal(visible.length, 33)
+  assert.equal(visible.filter((s) => s.kind === 'goals').length, 3)
+  assert.equal(visible.filter((s) => s.bind?.family === 'moneyline').length, 3)
+  assert.equal(TEMPLATE_SLOTS.length, 47, '折叠不能删除完整模板中的盘口')
+})
+
+test('折叠后连线只连接可见盘口，各支线没有断点', () => {
+  const keys = new Set(TEMPLATE_SLOTS.filter((s) => !isOuterSlot(s)).map((s) => s.key))
+  const edges = TEMPLATE_EDGES.filter(([a, b]) => keys.has(a) && keys.has(b))
+  assert.equal(edges.length, 33)
+  const reached = new Set(['goals_total'])
+  for (let pass = 0; pass < keys.size; pass += 1) {
+    for (const [a, b] of edges) {
+      if (reached.has(a)) reached.add(b)
+      if (reached.has(b)) reached.add(a)
+    }
+  }
+  assert.deepEqual([...reached].sort(), [...keys].sort())
 })
 
 test('槽位 key 唯一，边只引用存在的 key', () => {
@@ -84,24 +112,35 @@ test('槽位 key 唯一，边只引用存在的 key', () => {
   }
 })
 
-test('后补的 4 个槽位沿各自梯子的方向延伸', () => {
+test('新增档位沿原有梯子延伸，且每档连到上一档', () => {
   const at = (k: string) => TEMPLATE_SLOTS.find((s) => s.key === k)!
-  // 全场梯子自下而上、左右交替：4.5 在 3.5 上方且回到 2.5 那一列，5.5 再上去回到 3.5 那一列
-  assert.ok(at('total_4.5').y < at('total_3.5').y)
-  assert.ok(at('total_5.5').y < at('total_4.5').y)
-  assert.equal(at('total_4.5').x, at('total_2.5').x)
-  assert.equal(at('total_5.5').x, at('total_3.5').x)
-  // 两翼继续向外上方：主队往左上，客队往右上
-  assert.ok(at('home_2.5').x < at('home_1.5').x && at('home_2.5').y < at('home_1.5').y)
-  assert.ok(at('away_2.5').x > at('away_1.5').x && at('away_2.5').y < at('away_1.5').y)
-  // 四个都是全场进球大小盘的 Over 侧
-  for (const [k, subject, line] of [
-    ['total_4.5', 'match', 4.5],
-    ['total_5.5', 'match', 5.5],
-    ['home_2.5', 'home', 2.5],
-    ['away_2.5', 'away', 2.5],
-  ] as const) {
-    assert.deepEqual(at(k).bind, { family: 'ou', period: 'ft', subject, line, side: 'over' })
+  const linked = (a: string, b: string) => TEMPLATE_EDGES.some(([from, to]) => from === a && to === b)
+  for (const line of [6.5, 7.5, 8.5]) {
+    const s = at(`total_${line}`)
+    assert.ok(s.y < at(`total_${line - 1}`).y)
+    assert.equal(s.x, at(`total_${line - 2}`).x)
+    assert.deepEqual(s.bind, { family: 'ou', period: 'ft', subject: 'match', line, side: 'over' })
+    assert.ok(linked(`total_${line - 1}`, s.key))
+  }
+  for (const subject of ['home', 'away'] as const) {
+    for (const line of [3.5, 4.5, 5.5]) {
+      const s = at(`${subject}_${line}`)
+      const prev = at(`${subject}_${line - 1}`)
+      assert.ok(s.y < prev.y)
+      assert.ok(subject === 'home' ? s.x < prev.x : s.x > prev.x)
+      assert.deepEqual(s.bind, { family: 'ou', period: 'ft', subject, line, side: 'over' })
+      assert.ok(linked(prev.key, s.key))
+      for (const sign of ['-', '+']) {
+        const spread = at(`sp_${subject}_${sign}${line}`)
+        const prevSpread = at(`sp_${subject}_${sign}${line - 1}`)
+        assert.equal(spread.x, prevSpread.x)
+        assert.ok(spread.y > prevSpread.y)
+        assert.deepEqual(spread.bind, {
+          family: 'spread', period: 'ft', subject, line: sign === '-' ? -line : line, side: subject,
+        })
+        assert.ok(linked(prevSpread.key, spread.key))
+      }
+    }
   }
 })
 
@@ -129,15 +168,14 @@ test('成对的槽位关于轴线镜像，且两侧在同一行', () => {
   const pairs: Array<[string, string]> = [
     ['goals_home', 'goals_away'],
     ['ml_home', 'ml_away'],
-    ['home_0.5', 'away_0.5'],
-    ['home_1.5', 'away_1.5'],
-    ['home_2.5', 'away_2.5'],
-    // 让球同一行的两端互为镜像：第 1 列 ↔ 第 4 列、第 2 列 ↔ 第 3 列
-    ['sp_home_-1.5', 'sp_away_+1.5'],
-    ['sp_home_+1.5', 'sp_away_-1.5'],
-    ['sp_home_-2.5', 'sp_away_+2.5'],
-    ['sp_home_+2.5', 'sp_away_-2.5'],
   ]
+  for (const line of [0.5, 1.5, 2.5, 3.5, 4.5, 5.5]) {
+    pairs.push([`home_${line}`, `away_${line}`])
+    if (line >= 1.5) {
+      pairs.push([`sp_home_-${line}`, `sp_away_+${line}`])
+      pairs.push([`sp_home_+${line}`, `sp_away_-${line}`])
+    }
+  }
   for (const [l, r] of pairs) {
     assert.equal(slot(l).x + slot(r).x, AXIS_X * 2, `${l} / ${r} 不关于轴线镜像`)
     assert.equal(slot(l).y, slot(r).y, `${l} / ${r} 不在同一行`)
@@ -145,7 +183,7 @@ test('成对的槽位关于轴线镜像，且两侧在同一行', () => {
 })
 
 test('全场大小球梯子：只有互为镜像的两列，且纵向等步长', () => {
-  const ladder = ['total_0.5', 'total_1.5', 'total_2.5', 'total_3.5', 'total_4.5', 'total_5.5'].map(slot)
+  const ladder = [0.5, 1.5, 2.5, 3.5, 4.5, 5.5, 6.5, 7.5, 8.5].map((line) => slot(`total_${line}`))
   const xs = [...new Set(ladder.map((s) => s.x))].sort((a, b) => a - b)
   assert.equal(xs.length, 2, '梯子应当只有左右两列')
   assert.equal(xs[0] + xs[1], AXIS_X * 2, '两列不关于轴线镜像')
@@ -159,29 +197,29 @@ test('全场大小球梯子：只有互为镜像的两列，且纵向等步长',
   assert.ok(steps[0] > 0, '梯子应当自下而上')
 })
 
-test('两翼是同一把梯子：|Δx| 与 Δy 一致，只是方向相反', () => {
-  const shape = ([a, b, c]: [string, string, string]) => {
-    const [p, q, r] = [slot(a), slot(b), slot(c)]
-    return [Math.abs(q.x - p.x), q.y - p.y, Math.abs(r.x - q.x), r.y - q.y].join(',')
-  }
-  assert.equal(
-    shape(['home_0.5', 'home_1.5', 'home_2.5']),
-    shape(['away_0.5', 'away_1.5', 'away_2.5']),
-    '左右两翼步长不一致',
-  )
+test('两翼是同一把梯子：各档 |Δx| 与 Δy 一致，只是方向相反', () => {
+  const steps = (subject: string) => [1.5, 2.5, 3.5, 4.5, 5.5].map((line) => {
+    const p = slot(`${subject}_${line - 1}`)
+    const q = slot(`${subject}_${line}`)
+    return `${Math.abs(q.x - p.x)},${q.y - p.y}`
+  })
+  assert.deepEqual(steps('home'), steps('away'))
+  assert.equal(new Set(steps('home')).size, 1, '两翼各档步长应一致')
 })
 
-test('让球四列等距对称、两行各自齐平', () => {
-  const row1 = ['sp_home_-1.5', 'sp_home_+1.5', 'sp_away_-1.5', 'sp_away_+1.5'].map(slot)
-  const row2 = ['sp_home_-2.5', 'sp_home_+2.5', 'sp_away_-2.5', 'sp_away_+2.5'].map(slot)
-  for (const [name, row] of [['第一行', row1], ['第二行', row2]] as const) {
-    assert.equal(new Set(row.map((s) => s.y)).size, 1, `${name}不齐平`)
+test('让球四列对称、五行齐平且纵向等步长', () => {
+  const rows = [1.5, 2.5, 3.5, 4.5, 5.5].map((line) =>
+    [`sp_home_-${line}`, `sp_home_+${line}`, `sp_away_-${line}`, `sp_away_+${line}`].map(slot),
+  )
+  for (const row of rows) {
+    assert.equal(new Set(row.map((s) => s.y)).size, 1, `${row[0].key} 所在行不齐平`)
+    assert.deepEqual(row.map((s) => s.x), rows[0].map((s) => s.x))
+    assert.equal(row[0].x + row[3].x, AXIS_X * 2)
+    assert.equal(row[1].x + row[2].x, AXIS_X * 2)
   }
-  // 同一列的两行必须同 x（原稿 sp_home_-1.5 比同列的下一个高 15）
-  row1.forEach((s, i) => assert.equal(s.x, row2[i].x, `${s.key} 与同列的下一个不同列`))
-  // 第 1 / 4 列、第 2 / 3 列各自互为镜像
-  assert.equal(row1[0].x + row1[3].x, AXIS_X * 2)
-  assert.equal(row1[1].x + row1[2].x, AXIS_X * 2)
+  const steps = rows.slice(1).map((row, i) => row[0].y - rows[i][0].y)
+  assert.equal(new Set(steps).size, 1)
+  assert.ok(steps[0] > 0)
 })
 
 test('没有哪两个槽位靠得比 200 更近：规整不会把节点挤小', () => {
@@ -207,10 +245,10 @@ test('没有哪两个槽位靠得比 200 更近：规整不会把节点挤小', 
 
 // ==================== 缺盘口时槽位保留 ====================
 
-test('比赛没挂任何盘口时，26 个槽位仍在原位，只是 nodeId 为空', () => {
+test('比赛没挂任何盘口时，全部槽位仍在原位，只是 nodeId 为空', () => {
   const g = buildMarketGraph(EVENT, [])
   const slots = resolveTemplate(g, NO_GOALS)
-  assert.equal(slots.length, 26)
+  assert.equal(slots.length, TEMPLATE_SLOTS.length)
   for (const s of slots.filter((x) => x.kind === 'market')) {
     assert.equal(s.nodeId, null)
     assert.equal(s.price, null)
@@ -220,28 +258,62 @@ test('比赛没挂任何盘口时，26 个槽位仍在原位，只是 nodeId 为
   assert.equal(t35.x, 825)
 })
 
-// ==================== 大小球绑定 ====================
-
-test('全场大小球六档各绑各的线，取 Over 侧', () => {
-  const g = buildMarketGraph(EVENT, [ou(0.5), ou(1.5), ou(2.5), ou(3.5), ou(4.5), ou(5.5)])
+test('只挂低档盘口时，新增高档槽位保持空位，不借用低档盘口', () => {
+  const g = buildMarketGraph(EVENT, [
+    ou(5.5), ou(2.5, 'home'), ou(2.5, 'away'), spread('home', -2.5), spread('away', -2.5),
+  ])
   const slots = resolveTemplate(g, NO_GOALS)
-  for (const line of [0.5, 1.5, 2.5, 3.5, 4.5, 5.5]) {
-    const s = slots.find((x) => x.key === `total_${line}`)!
-    assert.ok(s.nodeId, `total_${line} 应绑到盘口`)
-    assert.equal(s.sideName, 'Over')
-    assert.ok(s.marketId, `total_${line} 应带原始盘口 id`)
-    assert.ok(s.tokenId, `total_${line} 应带 tokenId`)
+  const missing = [
+    'total_6.5', 'total_7.5', 'total_8.5',
+    ...[3.5, 4.5, 5.5].flatMap((line) => [
+      `home_${line}`, `away_${line}`,
+      `sp_home_-${line}`, `sp_home_+${line}`, `sp_away_-${line}`, `sp_away_+${line}`,
+    ]),
+  ]
+  for (const key of missing) {
+    const s = slots.find((x) => x.key === key)!
+    assert.equal(s.nodeId, null, key)
+    assert.equal(s.marketId, null, key)
+    assert.equal(s.tokenId, null, key)
+    assert.equal(s.price, null, key)
   }
 })
 
-test('单队大小球不会被全场盘抢走', () => {
-  const g = buildMarketGraph(EVENT, [ou(0.5), ou(0.5, 'home'), ou(0.5, 'away')])
+// ==================== 大小球绑定 ====================
+
+test('全场大小球九档各绑各的线，取 Over 侧并保留下单标识', () => {
+  const lines = [0.5, 1.5, 2.5, 3.5, 4.5, 5.5, 6.5, 7.5, 8.5]
+  const markets = lines.map((line) => ou(line))
+  const g = buildMarketGraph(EVENT, markets)
   const slots = resolveTemplate(g, NO_GOALS)
-  const ids = ['total_0.5', 'home_0.5', 'away_0.5'].map(
-    (k) => slots.find((s) => s.key === k)!.nodeId,
-  )
-  assert.ok(ids.every(Boolean), '三个槽位都应绑到盘口')
-  assert.equal(new Set(ids).size, 3, '必须是三张不同的盘')
+  for (const [i, line] of lines.entries()) {
+    const s = slots.find((x) => x.key === `total_${line}`)!
+    assert.ok(s.nodeId, `total_${line} 应绑到盘口`)
+    assert.equal(s.sideName, 'Over')
+    assert.equal(s.marketId, markets[i].id)
+    assert.equal(s.tokenId, markets[i].clobTokenIds![0])
+    assert.equal(s.hitNeed, line + 0.5)
+    assert.equal(s.hitSubject, 'total')
+  }
+})
+
+test('单队大小球六档按主客队和线绑定，不与全场盘口串台', () => {
+  const lines = [0.5, 1.5, 2.5, 3.5, 4.5, 5.5]
+  const markets = lines.flatMap((line) => [ou(line), ou(line, 'home'), ou(line, 'away')])
+  const g = buildMarketGraph(EVENT, markets)
+  const slots = resolveTemplate(g, NO_GOALS)
+  for (const [i, line] of lines.entries()) {
+    for (const [j, subject] of ['total', 'home', 'away'].entries()) {
+      const s = slots.find((x) => x.key === `${subject}_${line}`)!
+      const market = markets[i * 3 + j]
+      assert.ok(s.nodeId)
+      assert.equal(s.sideName, 'Over')
+      assert.equal(s.marketId, market.id)
+      assert.equal(s.tokenId, market.clobTokenIds![0])
+      assert.equal(s.hitNeed, line + 0.5)
+      assert.equal(s.hitSubject, subject)
+    }
+  }
 })
 
 // ==================== 胜平负 ====================
@@ -313,12 +385,34 @@ test('同一张让球盘的两个槽位价格之和≈1', () => {
   assert.ok(Math.abs(a + b - 1) < 0.02, `两侧之和 ${a + b} 应≈1`)
 })
 
-test('2.5 档同理配对', () => {
-  const g = buildMarketGraph(EVENT, [spread('home', -2.5), spread('away', -2.5)])
-  const slots = resolveTemplate(g, NO_GOALS)
+test('让球 1.5 至 5.5 各档两两配对，主客队取互补的 token 和价格', () => {
+  const lines = [1.5, 2.5, 3.5, 4.5, 5.5]
+  const markets = lines.flatMap((line) => [spread('home', -line), spread('away', -line)])
+  const g = buildMarketGraph(EVENT, markets)
+  const quotes = Object.fromEntries(g.nodes.flatMap((n) => [
+    [n.sides[0].tokenId!, { bid: 0.34, ask: 0.36 }],
+    [n.sides[1].tokenId!, { bid: 0.64, ask: 0.66 }],
+  ]))
+  const slots = resolveTemplate(applyLivePrices(g, quotes), NO_GOALS)
   const pick = (k: string) => slots.find((s) => s.key === k)!
-  assert.equal(pick('sp_home_-2.5').nodeId, pick('sp_away_+2.5').nodeId)
-  assert.equal(pick('sp_away_-2.5').nodeId, pick('sp_home_+2.5').nodeId)
+  for (const [i, line] of lines.entries()) {
+    for (const [j, subject] of ['home', 'away'].entries()) {
+      const other = subject === 'home' ? 'away' : 'home'
+      const minus = pick(`sp_${subject}_-${line}`)
+      const plus = pick(`sp_${other}_+${line}`)
+      const market = markets[i * 2 + j]
+      assert.ok(minus.nodeId)
+      assert.equal(minus.nodeId, plus.nodeId)
+      assert.equal(minus.marketId, market.id)
+      assert.equal(plus.marketId, market.id)
+      assert.equal(minus.tokenId, market.clobTokenIds![0])
+      assert.equal(plus.tokenId, market.clobTokenIds![1])
+      assert.equal(minus.sideName, market.outcomes![0])
+      assert.equal(plus.sideName, market.outcomes![1])
+      assert.ok(Math.abs(minus.price! + plus.price! - 1) < 1e-9)
+      assert.equal(minus.hitNeed, null)
+    }
+  }
 })
 
 // ==================== 中心节点显示进球数 ====================
