@@ -33,11 +33,13 @@ import {
   placeOrder,
   setupApprovals,
   type ApprovalState,
+  type CancelOutcome,
   type OpenOrderRow,
   type PlaceOutcome,
   type PlaceRequest,
   type SecureClientRequest,
 } from './clob-client'
+import { describeDiff, diffOpenOrders } from './open-orders'
 
 // 代理地址的读法搬去了 lib/use-wallet.ts（那边不引 SDK，主包能用）。
 // 这里转出去是为了不动既有调用点，新代码请直接从 lib/use-wallet 引。
@@ -290,6 +292,23 @@ function useSecureClient() {
 }
 
 /**
+ * 撤单的结果，**带上撤完之后交易所那份最新挂单列表**。
+ *
+ * `orders` 一定是交易所刚返回的那份，不是「本地删掉一行」算出来的 —— 本地算会把
+ * 「这笔其实已经成交了」这个事实算丢，而那正是重复买入的起点。
+ *
+ * `warning` 是「页面上那份已经过期」的告警（文案见 open-orders.describeDiff），没差异时为 null。
+ */
+export type CancelResult = {
+  outcome: CancelOutcome
+  orders: OpenOrderRow[]
+  warning: string | null
+}
+
+/** 查挂单的结果：列表 + 与上一份快照的对账告警 */
+export type ListResult = { orders: OpenOrderRow[]; warning: string | null }
+
+/**
  * 下单入口。
  */
 export function useClob() {
@@ -300,10 +319,45 @@ export function useClob() {
     [get],
   )
 
-  const listMine = useCallback(async (): Promise<OpenOrderRow[]> => listOpenOrders(await getRead()), [getRead])
+  /**
+   * 查挂单。传 `prev`（上一次显示的那份）就顺带对账：差异说明页面上那份已经过期，
+   * 要当场告诉用户，否则他会按一份过期的列表做决定。
+   */
+  const listMine = useCallback(
+    async (prev?: readonly OpenOrderRow[]): Promise<ListResult> => {
+      const orders = await listOpenOrders(await getRead())
+      return { orders, warning: prev ? describeDiff(diffOpenOrders(prev, orders)) : null }
+    },
+    [getRead],
+  )
 
+  /**
+   * 撤单，然后**无条件重查一遍挂单列表**。
+   *
+   * 为什么撤完一定要重查：撤单回执只回答「这一笔撤没撤掉」，回答不了「这段时间里别的
+   * 挂单有没有成交」。而用户撤单正是为了「不买了」—— 此时最该知道的恰恰是「其实已经
+   * 买到了」。重查一趟（约一次 HTTP）换掉「显示撤销成功、实际已买入」这个会让人重复
+   * 下单的错，这个代价必须付。
+   *
+   * 对账时把这笔自己的 id 放进 ignore：撤成功的单必然从列表里消失，把它算成「异常」
+   * 就成了狼来了。但 `confirmed !== 'cancelled'`（交易所没确认撤掉）时**不 ignore** ——
+   * 那种情况下它的消失正是关键信息（说明它已经成交了）。
+   *
+   * 重查失败不吞：撤单本身可能已经生效，但此刻我们**不知道**列表是什么样 —— 这种
+   * 「不知道」必须让用户看见，不能让界面停在一份过期快照上装作没事。
+   */
   const cancel = useCallback(
-    async (orderId: string): Promise<string> => cancelOrderById(await getRead(), orderId),
+    async (orderId: string, prev?: readonly OpenOrderRow[]): Promise<CancelResult> => {
+      const client = await getRead()
+      const outcome = await cancelOrderById(client, orderId)
+      const orders = await listOpenOrders(client)
+      const ignore = outcome.confirmed === 'cancelled' ? [orderId] : []
+      return {
+        outcome,
+        orders,
+        warning: prev ? describeDiff(diffOpenOrders(prev, orders, ignore)) : null,
+      }
+    },
     [getRead],
   )
 

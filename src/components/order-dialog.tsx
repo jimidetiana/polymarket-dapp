@@ -128,6 +128,104 @@ export function OrderDialog({
   const [notice, setNotice] = useState<string | null>(null)
   const [picked, setPicked] = useState<{ steps: number; timestamp: number } | null>(null)
   const [mine, setMine] = useState<OpenOrderRow[] | null>(null)
+  /** 挂单那份快照是什么时候取的。摆出来让人知道自己在看多久以前的数据 */
+  const [mineAt, setMineAt] = useState<number | null>(null)
+  /**
+   * 「页面上这份挂单与交易所不一致」的告警。
+   *
+   * 与 fatal / notice 分开，因为它既不是错误也不是成功，而是**数据可信度**的警告 ——
+   * 用户最该据它去核对持仓再决定要不要下单。实测过的那个坑就是它要防的：撤单显示
+   * 成功、其实早已成交，用户以为没买到又买一次。
+   */
+  const [staleWarning, setStaleWarning] = useState<string | null>(null)
+
+  /**
+   * 给轮询用的镜像。轮询回调要读「上一份挂单」来对账，但不能把 mine 放进它的依赖 ——
+   * 那样每刷一次就重建一次定时器。phase 同理（轮询要跳过下单/撤单进行中的时刻）。
+   */
+  const mineRef = useRef<OpenOrderRow[] | null>(null)
+  const phaseRef = useRef(phase)
+  const busyRef = useRef(false)
+  mineRef.current = mine
+  phaseRef.current = phase
+
+  /**
+   * 对账发现差异 / 撤单没撤掉时，把持仓、成交、余额一并刷掉。
+   *
+   * 这几段正是用户要去核对「到底买到没买到」的地方。只弹一句告警却让下面还摆着
+   * 下单前那份持仓，等于把人推回去做同一个错误判断。
+   */
+  function refreshFills() {
+    orders.refresh()
+    usdc.refresh()
+    void queryClient.invalidateQueries({ queryKey: ['positions'] })
+  }
+
+  /**
+   * 重查挂单，**以交易所返回的那份为准**覆盖界面，并把与上一份的差异报出来。
+   *
+   * `silent` 给自动轮询用：不动 phase（否则按钮会每隔几秒闪一下禁用）、也不把网络抖动
+   * 报成错误 —— 自动刷新失败下一轮会补上，而把它弹成红字只会制造噪音。手动点刷新则
+   * 相反：那是用户明确要一个答案，失败必须说。
+   *
+   * `busyRef` 挡并发：手动刷新和自动轮询可能撞在一起，两趟请求回来的先后无法保证，
+   * 晚回的那趟会把早回的覆盖掉 —— 而「覆盖成旧的那份」正是这次要修的病。
+   *
+   * 不用 useCallback：`clob` 每次渲染都是新对象，memo 不住（定时器那边改走 ref 了，
+   * 见下面那段注释），留着 useCallback 只是假装稳定、还得给依赖加例外。
+   */
+  async function refreshMine(opts?: { silent?: boolean }) {
+    const silent = opts?.silent === true
+    if (!clob.readiness.ready) return
+    if (busyRef.current) return
+    busyRef.current = true
+    if (!silent) {
+      setPhase('listing')
+      setFatal(null)
+    }
+    try {
+      const r = await clob.listMine(mineRef.current ?? undefined)
+      mineRef.current = r.orders
+      setMine(r.orders)
+      setMineAt(Date.now())
+      setStaleWarning(r.warning)
+      if (r.warning) refreshFills()
+    } catch (e) {
+      if (!silent) setFatal(explainError(e))
+    } finally {
+      busyRef.current = false
+      if (!silent) setPhase('idle')
+    }
+  }
+
+  /**
+   * 挂单面板开着时每 8 秒自动重查一次。
+   *
+   * 挂单在交易所那边随时会成交，而这个面板原来只在点开的那一刻查一次 —— 面板开着
+   * 看上去是「实时的未成交委托」，实际是一张越来越旧的快照。用户据它点撤单，就撞上
+   * 「撤的是一笔已经成交的单」。所以只要它开着就跟着刷，关掉就停（不白费鉴权请求）。
+   *
+   * 下单 / 撤单进行中的那一瞬跳过：那两条路径自己会把列表换成最新的，这里插一脚
+   * 只会和它们抢着写同一份状态。
+   *
+   * ⚠️ **定时器的依赖里不能有 `refreshMine`。** `useClob()` 每次渲染都返回一个新对象，
+   * 所以 `refreshMine` 的身份每渲染一变；把它放进依赖，这个 effect 就会跟着重建，
+   * 而盘口深度每 5 秒轮询一次、每次都触发重渲染 —— 于是 8 秒的定时器在**每次都被
+   * 提前清掉，一次也不会触发**，自动刷新静默失效（而它正是这次要修的东西）。
+   * 所以改成走 ref 读最新那一份，依赖只留真正该重建定时器的两个布尔。
+   */
+  const refreshMineRef = useRef(refreshMine)
+  refreshMineRef.current = refreshMine
+  const panelOpen = mine !== null
+  const canQuery = clob.readiness.ready
+  useEffect(() => {
+    if (!panelOpen || !canQuery) return
+    const id = window.setInterval(() => {
+      if (phaseRef.current !== 'idle') return
+      void refreshMineRef.current({ silent: true })
+    }, 8000)
+    return () => window.clearInterval(id)
+  }, [panelOpen, canQuery])
 
   /**
    * 成交后「多久能看到新数据」是不定的：左侧的持仓 / 成交要等 data-api 索引完，
@@ -249,32 +347,54 @@ export function OrderDialog({
     }
   }
 
+  /** 点标题行：开着就收起，收起就点开并查一次 */
   async function loadMine() {
     if (mine) {
       setMine(null)
+      mineRef.current = null
+      setMineAt(null)
+      setStaleWarning(null)
       return
     }
-    setPhase('listing')
-    setFatal(null)
-    try {
-      setMine(await clob.listMine())
-    } catch (e) {
-      setFatal(explainError(e))
-    } finally {
-      setPhase('idle')
-    }
+    await refreshMine()
   }
 
+  /**
+   * 撤单。**以交易所的回答为准**，不再本地删行了事。
+   *
+   * 三条路分开处理，因为它们对用户的含义完全不同：
+   *  - 确认撤掉了 → 绿色成功，列表换成交易所那份新的
+   *  - 交易所说撤不掉（最常见就是「已经成交了」）→ **警告色**，并刷持仓/成交/余额，
+   *    让人当场看到自己其实已经买到了。原来这里显示的是绿色的「已提交撤销请求」，
+   *    用户因此以为没买到、又买一次。
+   *  - 回执没确认 → 同样当作「不确定」报警告，不假装成功
+   *
+   * 不管哪条路，列表都用重查回来的那份覆盖。
+   */
   async function doCancel(id: string) {
     setPhase('cancelling')
     setFatal(null)
     setNotice(null)
+    setStaleWarning(null)
     try {
-      const msg = await clob.cancel(id)
-      setMine((prev) => prev?.filter((o) => o.id !== id) ?? null)
-      setNotice(msg)
+      const r = await clob.cancel(id, mineRef.current ?? undefined)
+      mineRef.current = r.orders
+      setMine(r.orders)
+      setMineAt(Date.now())
+      if (r.outcome.confirmed === 'cancelled') {
+        setNotice(r.outcome.message)
+        setStaleWarning(r.warning)
+        if (r.warning) refreshFills()
+      } else {
+        // 撤不掉 / 没确认：把回执那句和对账告警并成一条警告显示，并刷下面几段
+        setStaleWarning([r.outcome.message, r.warning].filter(Boolean).join('\n'))
+        refreshFills()
+      }
     } catch (e) {
+      // 撤单抛异常时，列表的真实状态是**未知**的 —— 这笔可能撤掉了，也可能没有。
+      // 所以除了报错，还要重查一遍，不让界面停在那份过期快照上。
       setFatal(explainError(e))
+      void refreshMine({ silent: true })
     } finally {
       setPhase('idle')
     }
@@ -397,6 +517,36 @@ export function OrderDialog({
                           : tr('点开（需签名一次）', 'Show (needs one signature)')}
                     </span>
                   </button>
+
+                  {/* 快照时间 + 手动刷新。挂单随时会成交，所以要让人看见自己在看
+                      多久以前的数据 —— 「刚刚」和「30 秒前」对该不该直接点撤单
+                      是两种判断。自动每 8 秒刷一次（见 refreshMine 上方），这个
+                      按钮给「现在就要一个准数」的时刻。 */}
+                  {mine && (
+                    <div className="flex items-center justify-between gap-2 border-t border-border px-2.5 py-1.5">
+                      <span className="text-[10px] text-muted-foreground">
+                        {tr('交易所数据 · ', 'From exchange · ')}
+                        {mineAt ? <Ago at={mineAt} /> : '—'}
+                        {tr('（每 8 秒自动刷新）', ' (auto-refresh every 8s)')}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => void refreshMine()}
+                        disabled={phase !== 'idle'}
+                        className="shrink-0 rounded border border-border px-1.5 py-0.5 text-[10px] text-foreground/80 hover:bg-muted disabled:opacity-50"
+                      >
+                        {phase === 'listing' ? tr('刷新中…', 'Refreshing…') : tr('刷新', 'Refresh')}
+                      </button>
+                    </div>
+                  )}
+
+                  {/* 挂单数据与交易所不一致 —— 必须显眼，这是「别重复买入」的唯一提示。
+                      whitespace-pre-line：撤单回执那句与对账告警是用 \n 并起来的。 */}
+                  {staleWarning && (
+                    <p className="whitespace-pre-line border-t border-warning/30 bg-warning/10 px-2.5 py-2 text-[10px] leading-snug text-warning">
+                      ⚠ {staleWarning}
+                    </p>
+                  )}
 
                   {mine &&
                     (!mine.length ? (
@@ -619,4 +769,24 @@ export function OrderDialog({
     </div>,
     document.body,
   )
+}
+
+/**
+ * 「N 秒前」，每秒自己走一格。
+ *
+ * 为什么要自己走：这一行是**数据新旧**的指示，而指示本身停住就成了误导 —— 一个写死的
+ * 「3 秒前」挂在那里不动，比不写更糟。挂单面板只在开着时渲染它，所以这个计时器跟着
+ * 面板一起生灭。
+ */
+function Ago({ at }: { at: number }) {
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    const id = window.setInterval(() => setNow(Date.now()), 1000)
+    return () => window.clearInterval(id)
+  }, [])
+  const sec = Math.max(0, Math.round((now - at) / 1000))
+  if (sec < 2) return <>{tr('刚刚', 'just now')}</>
+  if (sec < 60) return <>{tr(`${sec} 秒前`, `${sec}s ago`)}</>
+  const min = Math.floor(sec / 60)
+  return <>{tr(`${min} 分钟前`, `${min}m ago`)}</>
 }

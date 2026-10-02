@@ -397,20 +397,61 @@ export async function listOpenOrders(client: SecureClient): Promise<OpenOrderRow
   }))
 }
 
+/**
+ * 撤单的结果。
+ *
+ * ⚠️ **不要退回成一个字符串。** 原来这个函数返回 `string`，调用方拿不到「成没成」这个
+ * 事实，只能把它当提示显示 —— 于是交易所回报「没撤掉（这笔已经成交了）」时，界面照样
+ * 显示成绿色的成功提示，还把那行从列表里删掉。用户以为没买到，又买一次，**重复买入**。
+ * 所以成败必须是**结构化的字段**，由调用方按它分别处理。
+ *
+ * `confirmed` 三态，别合并成 boolean：
+ *  - `'cancelled'` 交易所明确说撤掉了（id 在 canceled 里）
+ *  - `'rejected'`  交易所明确说撤不掉（id 在 notCanceled 里，原因在 reason）——
+ *                  最常见的原因就是**它已经成交了**
+ *  - `'unknown'`   两个名单里都没有它。按「不确定」处理：既不能报成功，也不能断言失败，
+ *                  要去重查一遍挂单列表才知道（见 use-clob 的 cancel）。
+ */
+export type CancelOutcome = {
+  confirmed: 'cancelled' | 'rejected' | 'unknown'
+  /** 交易所给的拒绝原因，`rejected` 时才有 */
+  reason: string | null
+  /** 给人看的一句话 */
+  message: string
+}
+
 /** 同 listOpenOrders，`client` 传 getReadClient 那一份。 */
-export async function cancelOrderById(client: SecureClient, orderId: string): Promise<string> {
+export async function cancelOrderById(client: SecureClient, orderId: string): Promise<CancelOutcome> {
   const r = await client.cancelOrder({ orderId })
   const canceled = Array.isArray((r as { canceled?: unknown }).canceled)
     ? (r as { canceled: unknown[] }).canceled.map(String)
     : []
   const notCanceled = (r as { notCanceled?: Record<string, string> }).notCanceled ?? {}
-  const failed = Object.keys(notCanceled)
-  if (failed.length) {
-    const list = failed.map((id) => `${id} (${notCanceled[id]})`).join(', ')
-    return tr(`部分未撤销：${list}`, `Some not cancelled: ${list}`)
+
+  if (Object.prototype.hasOwnProperty.call(notCanceled, orderId)) {
+    const reason = String(notCanceled[orderId] ?? '')
+    return {
+      confirmed: 'rejected',
+      reason,
+      message: tr(
+        `交易所没有撤销这笔挂单${reason ? `：${reason}` : ''}。它很可能已经成交 —— 请核对下面的「持仓 / 成交」，不要再下一单。`,
+        `The exchange did not cancel this order${reason ? `: ${reason}` : ''}. It has most likely already filled — check "Positions / Trades" below and do not place another order.`,
+      ),
+    }
   }
-  if (canceled.includes(orderId)) return tr('已撤销', 'Cancelled')
-  return tr('已提交撤销请求', 'Cancel request submitted')
+  if (canceled.includes(orderId)) {
+    return { confirmed: 'cancelled', reason: null, message: tr('已撤销', 'Cancelled') }
+  }
+  // 两个名单里都没有它。**不报成功** —— 原来这里返回「已提交撤销请求」，读起来
+  // 跟成功没区别，而这正是「显示撤销成功、其实已经买入」的那一半成因。
+  return {
+    confirmed: 'unknown',
+    reason: null,
+    message: tr(
+      '交易所没有确认这笔撤单（回执里既没说撤掉、也没说失败）。',
+      "The exchange didn't confirm this cancellation (the receipt lists it as neither cancelled nor failed).",
+    ),
+  }
 }
 
 // ── 错误翻译 ─────────────────────────────────────────────
