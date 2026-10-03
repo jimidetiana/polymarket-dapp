@@ -334,12 +334,35 @@ function renderBlocks(s, asset) {
   head.push(`实际胜率 ${pct(s.actualRate)}　期望胜率 ${pct(s.expectedRate)}（按建仓价该中约 ${s.expWins.toFixed(1)} 场）　较定价 ${sPp((s.actualRate - s.expectedRate) * 100)}`);
   if (s.open.length) head.push(`进行中 ${s.open.length} 笔（结算后并入战绩）`);
 
-  const countedBlock = [`__明细 · 计入统计（${s.counted.length}）__`, ...s.counted.map((r) => detailRow(r, true))];
-  const shownBlock = s.shown.length
-    ? [`__明细 · 不计入（赛前买卖 / 极端低赔，共 ${s.shown.length}）__`, ...s.shown.map((r) => detailRow(r, false))]
-    : [];
-  return { head: head.join('\n'), counted: countedBlock.join('\n'), shown: shownBlock.join('\n') };
+  // 明细按块给出标题 + 行数组，行数组后面要按 Discord 字数上限裁（见 fitBlock）。
+  const counted = {
+    title: `__明细 · 计入统计（${s.counted.length}）__`,
+    rows: s.counted.map((r) => detailRow(r, true)),
+  };
+  const shown = s.shown.length
+    ? {
+      title: `__明细 · 不计入（赛前买卖 / 极端低赔，共 ${s.shown.length}）__`,
+      rows: s.shown.map((r) => detailRow(r, false)),
+    }
+    : null;
+  return { head: head.join('\n'), counted, shown };
 }
+
+// 场次只会越来越多，总有一天装不下：Discord 单条 embed 描述上限 4096，整条消息
+// 所有 embed（含标题/字段/footer）合计上限 6000。明细是时间倒序，所以裁掉的是**最旧**的几行，
+// 并在块末注明省略了多少。顺序是「先砍不计入、再砍计入」——计入的才是战绩本体。
+const MSG_BUDGET = 5800; // 留点余量给标题、footer、字段
+const DESC_LIMIT = 4096;
+
+function fitBlock(block, keep) {
+  if (!block) return '';
+  const omitted = block.rows.length - keep;
+  const rows = omitted > 0 ? block.rows.slice(0, keep) : block.rows;
+  const tail = omitted > 0 ? [`…另 ${omitted} 场未列出（更早的记录）`] : [];
+  return [block.title, ...rows, ...tail].join('\n');
+}
+
+const fullBlock = (block) => fitBlock(block, block ? block.rows.length : 0);
 
 // ── Discord ────────────────────────────────────────────
 async function api(method, path, body) {
@@ -372,24 +395,40 @@ async function publish(embeds) {
   return { edited: false, id: m.id };
 }
 
-// 把三部分打进 embeds：单条 embed 描述上限 4096、整条消息所有 embed 合计上限 6000。
-// 装得下就一条 embed；装不下把「不计入」明细挪到第二条 embed。核验信息挂在第一条的 field。
+// 把三部分打进 embeds。两条上限都要守：单条 embed 描述 4096、整条消息所有 embed 合计 6000
+// （标题、字段、footer 都算进那 6000，所以 MSG_BUDGET 留了余量）。
+// 装得下就一条 embed；装不下把「不计入」明细挪到第二条，并按 fitBlock 裁掉最旧的几行。
 function buildEmbeds(blocks, wallet) {
   const verifyField = {
     name: '可验证钱包（链上公开，任何人可查）',
     value: `\`${wallet}\`\n[Polymarket 主页](https://polymarket.com/profile/${wallet}) · [Polygonscan](https://polygonscan.com/address/${wallet})`,
   };
   const base = { color: COLOR, footer: { text: '数据来自 Polymarket + 链上余额，随每次更新重算' }, timestamp: new Date().toISOString() };
-  let desc1 = `${blocks.head}\n\n${blocks.counted}`;
+  const TITLE = '📊 战绩';
+  const overhead = TITLE.length + base.footer.text.length + verifyField.name.length + verifyField.value.length;
+
+  // 先尽量全列，超了就一行一行砍：先砍「不计入」，砍完还超再砍「计入」（战绩本体最后动）。
+  let keepShown = blocks.shown ? blocks.shown.rows.length : 0;
+  let keepCounted = blocks.counted.rows.length;
+  let desc1, desc2;
+  for (;;) {
+    desc1 = `${blocks.head}\n\n${fitBlock(blocks.counted, keepCounted)}`;
+    desc2 = blocks.shown ? fitBlock(blocks.shown, keepShown) : '';
+    const over = desc1.length + desc2.length + overhead > MSG_BUDGET;
+    if (!over && desc1.length <= DESC_LIMIT && desc2.length <= DESC_LIMIT) break;
+    if (keepShown > 0 && (over || desc2.length > DESC_LIMIT)) keepShown--;
+    else if (keepCounted > 0) keepCounted--;
+    else break; // 两边都砍空了还超（理论不会），交给 slice 兜底
+  }
+
   const embeds = [];
-  if (blocks.shown && (`${desc1}\n\n${blocks.shown}`).length <= 4000) {
-    desc1 = `${desc1}\n\n${blocks.shown}`;
-    embeds.push({ ...base, title: '📊 战绩', description: desc1.slice(0, 4096), fields: [verifyField] });
-  } else if (blocks.shown) {
-    embeds.push({ ...base, title: '📊 战绩', description: desc1.slice(0, 4096) });
-    embeds.push({ ...base, description: blocks.shown.slice(0, 4096), fields: [verifyField] });
+  if (desc2 && desc1.length + desc2.length + 2 + overhead <= MSG_BUDGET && (`${desc1}\n\n${desc2}`).length <= DESC_LIMIT) {
+    embeds.push({ ...base, title: TITLE, description: `${desc1}\n\n${desc2}`.slice(0, DESC_LIMIT), fields: [verifyField] });
+  } else if (desc2) {
+    embeds.push({ ...base, title: TITLE, description: desc1.slice(0, DESC_LIMIT) });
+    embeds.push({ ...base, description: desc2.slice(0, DESC_LIMIT), fields: [verifyField] });
   } else {
-    embeds.push({ ...base, title: '📊 战绩', description: desc1.slice(0, 4096), fields: [verifyField] });
+    embeds.push({ ...base, title: TITLE, description: desc1.slice(0, DESC_LIMIT), fields: [verifyField] });
   }
   return embeds;
 }
@@ -418,7 +457,8 @@ async function main() {
   const blocks = renderBlocks(s, asset);
 
   if (DRY) {
-    console.log([blocks.head, '', blocks.counted, '', blocks.shown].join('\n'));
+    // dry 打全量（不裁），方便逐场核对。
+    console.log([blocks.head, '', fullBlock(blocks.counted), '', fullBlock(blocks.shown)].join('\n'));
     console.log(`\n(参考) 现金 ${cashOk ? usd(cash) : '读取失败'} · 持仓市值 ${usd(posValue)} · 流水(累计买入) ${usd(cap.turnover)} · 峰值自有资金投入 ${usd(cap.peakDeployed)} · 净现金流 ${sUsd(cap.net)}`);
     console.log(`(dry) 钱包 ${wallet}，未发 Discord。`);
     return;
