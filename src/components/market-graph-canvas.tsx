@@ -335,14 +335,21 @@ export function MarketGraphCanvas({
     const { px, py } = localPoint(e)
     d.pointers.set(e.pointerId, { x: px, y: py })
 
-    if (d.pointers.size >= 2 && d.pinch) {
+    // 先把 pinch 读成局部量，**不要在 setView 的更新函数里读 drag.current**。
+    // 更新函数不是立刻执行的，React 留到下一次渲染才调；而 endPointer 在手指
+    // 抬起（或浏览器接管手势派发 pointercancel）时会把 d.pinch 置成 null。
+    // 原来写 `d.pinch!.u`，那一下就在**渲染期间**抛 TypeError —— 渲染期抛错
+    // 会卸载整棵树，项目里又没有 error boundary，于是整页白屏。
+    // 捏合白屏、点 +/− 不白屏的差别就在这里：zoomAtCenter 的锚点是局部量。
+    const pinch = d.pinch
+    if (d.pointers.size >= 2 && pinch) {
       const [a, b] = [...d.pointers.values()]
       const dist = Math.hypot(a.x - b.x, a.y - b.y)
-      if (d.pinch.dist > 0) {
+      if (pinch.dist > 0) {
         // 相对起始间距算目标倍数，而不是逐帧累乘 —— 累乘会积累误差，
         // 手指回到原位时缩放回不到原值。
-        const target = (d.pinch.k * dist) / d.pinch.dist
-        setView((v) => zoomAt({ ...v, k: v.k }, d.pinch!.u, target / v.k, box))
+        const target = (pinch.k * dist) / pinch.dist
+        setView((v) => zoomAt(v, pinch.u, target / v.k, box))
       }
       d.moved = Infinity // 捏合过就不算点击
       return
@@ -388,8 +395,15 @@ export function MarketGraphCanvas({
         'relative h-full w-full overflow-hidden',
       )}
       // 关掉浏览器默认的触摸手势（下拉刷新、双指缩放整页），
-      // 否则手机上捏合会缩放整个页面而不是画布
-      style={{ touchAction: zoomed ? 'none' : 'pan-y' }}
+      // 否则手机上捏合会缩放整个页面而不是画布。
+      //
+      // **恒定 none，不按 zoomed 分档**。原来未放大时给 pan-y，本意是把纵向
+      // 滚动让给页面，但这个布局里页面根本不滚（h-dvh + main overflow-hidden +
+      // 容器自己 overflow-hidden），所以那一档没让出任何东西，只造成一个后果：
+      // 浏览器会在手势**开始时**就锁定 touch-action，于是从基础视图起手的双指
+      // 捏合被判成「缩放整页」，我们这边收到的是 pointercancel ——
+      // 捏合放大从来就没生效过，而 cancel 正是上面那条白屏路径的触发点。
+      style={{ touchAction: 'none' }}
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={endPointer}

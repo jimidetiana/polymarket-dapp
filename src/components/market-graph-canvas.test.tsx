@@ -55,3 +55,14 @@ describe('盘口默认折叠', () => {
     expect(html).not.toContain('O/U 8.5')
   })
 })
+
+describe('触摸手势', () => {
+  it('容器 touch-action 恒为 none，不把双指手势让给浏览器', () => {
+    // 改回 pan-y 会让浏览器在手势**开始时**就把双指捏合判成「缩放整页」，
+    // 我们这边只收到 pointercancel —— 捏合放大失效，还会触发白屏那条路径
+    // （手指抬起后 setView 的更新函数才跑，那时 pinch 已被置空）。
+    // 这个布局里页面不滚（h-dvh + main/容器 overflow-hidden），
+    // 让出纵向滚动没有任何收益。
+    expect(render()).toContain('touch-action:none')
+  })
+})
