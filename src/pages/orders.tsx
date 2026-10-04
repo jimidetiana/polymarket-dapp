@@ -22,7 +22,7 @@ import { setLang, tr, useLang } from '../lib/i18n'
 import { useProxyWallet } from '../lib/use-wallet'
 import { useAccountOrders } from '../lib/use-positions'
 import { usePositionMarketIndex } from '../lib/use-graph'
-import { positionKind, type PolyPosition } from '../lib/positions'
+import { grossAvgPriceOf, positionKind, type PolyPosition } from '../lib/positions'
 import { localizeMarketTitle, localizeMarketType, localizeOutcome, localizePick, localizeSportsMarket, splitMatchMarket } from '../lib/dict'
 import { PositionRow, TradeRow } from '../components/position-views'
 import { PositionsBoard } from '../components/positions-board'
@@ -133,6 +133,10 @@ export default function OrdersPage() {
    * （非足球盘、或赛事已下架）就退回从持仓标题解析，保证仍能导出。
    */
   function toExportRow(p: PolyPosition): ExportRow {
+    // 价格一律用**含费**均价（grossAvgPriceOf）：手续费不摊进单价，推出的欧赔就比实际
+    // 能拿到的高一截，等于把赔率说好看了。费额单独带出来，页脚另报一次。
+    const avgPrice = grossAvgPriceOf(p)
+    const feeUsd = p.entryFeesUsdc
     const info = marketIndex.get(p.asset)
     if (info) {
       return {
@@ -140,7 +144,8 @@ export default function OrdersPage() {
         market: localizeSportsMarket(info.sportsType, info.suffix),
         pick: localizePick({ outcome: p.outcome, groupItemTitle: info.groupItemTitle, line: info.line, sportsType: info.sportsType }),
         timeSec: timeByAsset.get(p.asset),
-        avgPrice: p.avgPrice,
+        avgPrice,
+        feeUsd,
         size: p.size,
       }
     }
@@ -150,7 +155,8 @@ export default function OrdersPage() {
       market: localizeMarketType(parts.market, p.outcome),
       pick: localizeOutcome(p.outcome) || '—',
       timeSec: timeByAsset.get(p.asset),
-      avgPrice: p.avgPrice,
+      avgPrice,
+      feeUsd,
       size: p.size,
     }
   }

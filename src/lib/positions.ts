@@ -61,8 +61,14 @@ export type PolyPosition = {
   conditionId: string
   /** 持有份额。实测带一长串小数尾巴（如 36190.7986） */
   size: number
-  /** 建仓均价 */
+  /** 建仓均价，**不含手续费**（见 grossAvgPriceOf） */
   avgPrice: number
+  /** 建仓成本，不含手续费 ≈ size × avgPrice */
+  initialValue: number
+  /** 建仓成本，**含**入场手续费 = initialValue + entryFeesUsdc */
+  grossInitialValue: number
+  /** 入场手续费（美元），对应当前还持有的这部分份额 */
+  entryFeesUsdc: number
   /** 现价 */
   curPrice: number
   /** 当前市值 */
@@ -100,6 +106,35 @@ export type PolyTrade = {
   /** 盘口缩略图，同 PolyPosition.icon。/trades 不一定给，拿不到就是空串 */
   icon: string
   transactionHash: string
+}
+
+/**
+ * **含费建仓均价** —— 把入场手续费摊进单价，用它推出的赔率才是真实赔率。
+ *
+ * ## 为什么不需要自己区分挂单 / 主动买入
+ *
+ * Polymarket 的吃单费是按 `份额 × rate × [p(1−p)]^exponent` 算的（见 lib/fee.ts），
+ * maker 与 taker 费率不同，所以「这笔是挂单成交还是主动吃单」确实会改变费用。但
+ * **不必在这里重算**：`/positions` 已经直接返回 `entryFeesUsdc`，那是交易所按每一笔
+ * 实际成交（各自的 maker/taker 身份、各自的成交价）累出来的真实入场费。自己从成交
+ * 明细反推只会得到一个更差的近似 —— `/trades` 并不标 maker/taker（那个
+ * `takerOnly=false` 只是不过滤，不是打标），真要分辨得逐笔比对成交时的盘口状态。
+ *
+ * 实测核对过（2026-10，有真实成交的账户）：
+ *   grossInitialValue = initialValue + entryFeesUsdc，而 initialValue ≈ size × avgPrice
+ * 所以 `grossInitialValue / size` 就是含费单价，口径与交易所一致。
+ *
+ * ## 为什么不用 avgPrice + 自算的费
+ *
+ * `avgPrice` 被接口截到 4 位小数，乘回份额会有分级误差；`grossInitialValue` 是 6 位
+ * 的美元数，直接除份额更准。拿不到这两个字段（接口变形、老缓存）就退回 `avgPrice`
+ * —— 少算了费比显示 NaN 好，调用方不需要为此加关卡。
+ */
+export function grossAvgPriceOf(p: PolyPosition): number {
+  const size = Math.abs(p.size)
+  if (size <= SIZE_EPSILON) return p.avgPrice
+  if (!Number.isFinite(p.grossInitialValue) || p.grossInitialValue <= 0) return p.avgPrice
+  return p.grossInitialValue / size
 }
 
 /**
@@ -244,6 +279,9 @@ function toPosition(raw: unknown): PolyPosition | null {
     conditionId: o.conditionId == null ? '' : String(o.conditionId),
     size: num(o.size),
     avgPrice: num(o.avgPrice),
+    initialValue: num(o.initialValue),
+    grossInitialValue: num(o.grossInitialValue),
+    entryFeesUsdc: num(o.entryFeesUsdc),
     curPrice: num(o.curPrice),
     currentValue: num(o.currentValue),
     cashPnl: num(o.cashPnl),

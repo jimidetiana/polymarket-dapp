@@ -71,9 +71,12 @@ export function PositionsBoard({
   const groups = groupByMatch(rows, (br) => br.row.match)
   let totalShares = 0
   let totalCost = 0
+  let totalFee = 0
   for (const { row } of rows) {
     totalShares += row.size
+    // avgPrice 已是含费价，所以手续费不再加进合计，只另报一次 —— 见 orders-export 顶部口径
     totalCost += row.size * row.avgPrice
+    if (Number.isFinite(row.feeUsd)) totalFee += row.feeUsd
   }
 
   return (
@@ -163,6 +166,8 @@ export function PositionsBoard({
               `${groups.length} 场比赛 · ${rows.length} 个盘口 · 总份额 ${trimShares(totalShares)}`,
               `${groups.length} matches · ${rows.length} markets · ${trimShares(totalShares)} shares`,
             )}
+            {totalFee > 0 &&
+              tr(` · 含手续费 $${totalFee.toFixed(2)}`, ` · incl. fees $${totalFee.toFixed(2)}`)}
           </span>
           <span className="flex items-baseline gap-1.5">
             <span className="text-[11px] text-muted-foreground">{tr('总成本', 'Total cost')}</span>

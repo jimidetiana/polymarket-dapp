@@ -20,7 +20,7 @@ import { useState } from 'react'
 import { tr, zonedTimeParts } from '../lib/i18n'
 import { cn } from '../lib/utils'
 import { localizeMarketTitle, localizeOutcome } from '../lib/dict'
-import type { PolyPosition, PolyTrade } from '../lib/positions'
+import { grossAvgPriceOf, type PolyPosition, type PolyTrade } from '../lib/positions'
 
 /**
  * 盘口缩略图。data-api 直接给 URL；拿不到或加载失败时退到一个灰块占位 ——
@@ -100,6 +100,8 @@ export function PositionRow({
   showTitle?: boolean
 }) {
   const pnl = settled ? p.realizedPnl : p.cashPnl
+  // 均价用**含费**价：手续费不摊进单价，用户看到的成本就比实际低（见 positions.grossAvgPriceOf）
+  const avg = grossAvgPriceOf(p)
 
   // 紧凑单行（弹窗内）：不摆缩略图和标题（那儿已在盘口上下文里），只把结果换成中文。
   if (!showTitle) {
@@ -114,7 +116,7 @@ export function PositionRow({
           <Pnl value={pnl} className="shrink-0 text-[11px]" />
         </div>
         <p className="mt-0.5 font-mono text-[10px] tnum text-muted-foreground">
-          {tr('均价', 'Avg')} {p.avgPrice.toFixed(3)}
+          {tr('均价', 'Avg')} {avg.toFixed(3)}
           {!settled &&
             tr(
               ` · 现价 ${p.curPrice.toFixed(3)} · 市值 $${p.currentValue.toFixed(2)}`,
@@ -151,7 +153,7 @@ export function PositionRow({
         <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1">
           <OutcomeChip outcome={p.outcome} />
           <span className="font-mono tnum text-[11px] text-muted-foreground">
-            {p.size} {tr('份', 'shares')} · {tr('均价', 'avg')} {p.avgPrice.toFixed(3)}
+            {p.size} {tr('份', 'shares')} · {tr('均价', 'avg')} {avg.toFixed(3)}
           </span>
         </div>
 

@@ -16,6 +16,9 @@
  * 价格两种口径都给：**百分比**（= 均价 ×100，即隐含概率）和**欧赔**（十进制赔率 = 1/均价）。
  * 花费 = 份额 × 均价（建仓成本）。
  *
+ * ⚠️ 这里的「均价」是**含入场手续费**的价（见 positions.grossAvgPriceOf），由页面层算好
+ * 传进来。所以三列都是真实成本口径：费不进价格，推出的赔率会比实际能拿到的高。
+ *
  * ⚠️ 时间：持仓接口没有时间戳（一个仓位是多笔成交的汇总），所以「时间」取该 token
  * **最后一笔买入**的成交时间，由调用方从成交明细算好传进来（meta.timeByAsset）。
  */
@@ -34,8 +37,14 @@ export type ExportRow = {
   pick: string
   /** 最近一次买入的秒级时间戳；没有则不显示 */
   timeSec?: number
-  /** 建仓均价 0~1（算百分比与欧赔） */
+  /**
+   * 建仓均价 0~1，**含入场手续费**（见 positions.grossAvgPriceOf）—— 百分比、欧赔、
+   * 花费三列都由它算。用含费价是因为它才是真实成本：手续费不进价格，推出的赔率
+   * 就比实际能拿到的高，等于把赔率说好看了。
+   */
   avgPrice: number
+  /** 这部分份额的入场手续费（美元），已计入 avgPrice，页脚单独报一次 */
+  feeUsd: number
   /** 持有份额 */
   size: number
 }
@@ -202,6 +211,9 @@ export async function exportPositionsImage(
     })),
   }))
 
+  // 总成本已含手续费（avgPrice 是含费价），所以手续费不再加进合计，只在页脚另报一次，
+  // 让人看得出「这里面有多少是费」—— 不然含费与不含费的两个数字看起来没有区别。
+  const totalFee = rows.reduce((s, r) => s + (Number.isFinite(r.feeUsd) ? r.feeUsd : 0), 0)
   const totalItems = groups.reduce((s, g) => s + g.items.length, 0)
   const bodyH = groups.reduce((s, g) => s + MATCH_H + g.items.length * ROW_H, 0)
   const cardH = HEAD_H + TABLE_HEAD_H + bodyH + FOOT_H
@@ -370,8 +382,8 @@ export async function exportPositionsImage(
   ctx.font = `500 12px ${FONT_SANS}`
   ctx.fillText(
     tr(
-      `${groups.length} 场比赛 · ${totalItems} 个盘口 · 总份额 ${trimNum(totalShares)}`,
-      `${plural(groups.length, 'match', 'matches')} · ${plural(totalItems, 'market', 'markets')} · ${trimNum(totalShares)} shares`,
+      `${groups.length} 场比赛 · ${totalItems} 个盘口 · 总份额 ${trimNum(totalShares)} · 含手续费 $${totalFee.toFixed(2)}`,
+      `${plural(groups.length, 'match', 'matches')} · ${plural(totalItems, 'market', 'markets')} · ${trimNum(totalShares)} shares · incl. $${totalFee.toFixed(2)} fees`,
     ),
     cx.market,
     footY,

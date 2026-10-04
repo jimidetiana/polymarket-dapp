@@ -8,6 +8,7 @@
 import { test } from 'vitest'
 import assert from 'node:assert/strict'
 import {
+  grossAvgPriceOf,
   indexPositions,
   matchHasPosition,
   positionKind,
@@ -21,6 +22,9 @@ function mk(over: Partial<PolyPosition> & { asset: string }): PolyPosition {
     conditionId: '0xcid',
     size: 10,
     avgPrice: 0.5,
+    initialValue: 5,
+    grossInitialValue: 5,
+    entryFeesUsdc: 0,
     curPrice: 0.5,
     currentValue: 5,
     cashPnl: 0,
@@ -162,4 +166,26 @@ test('slotPositionMark：本侧优先于另一侧', () => {
   const mark = slotPositionMark({ tokenId: 'over', conditionId: '0xou' }, idx, new Set(['over']))
   assert.equal(mark?.ownSide, true)
   assert.equal(mark?.position.outcome, 'Over')
+})
+
+test('grossAvgPriceOf：含费均价 = grossInitialValue / 份额', () => {
+  // 实测过的一条真实仓位：initialValue 285.7154 + 入场费 9.73842 = gross 295.453874
+  const p = mk({
+    asset: 'a',
+    size: 569.7484,
+    avgPrice: 0.5014,
+    initialValue: 285.7154,
+    entryFeesUsdc: 9.73842,
+    grossInitialValue: 295.453874,
+  })
+  // 含费价必须高于接口给的 avgPrice —— 费摊进单价只会让成本变贵
+  assert.ok(grossAvgPriceOf(p) > p.avgPrice)
+  assert.equal(grossAvgPriceOf(p).toFixed(4), '0.5186')
+})
+
+test('grossAvgPriceOf：拿不到费用字段时退回 avgPrice', () => {
+  // 接口变形/老缓存：少算费比显示 NaN 好，调用方不该为此加关卡
+  assert.equal(grossAvgPriceOf(mk({ asset: 'a', grossInitialValue: 0 })), 0.5)
+  // 份额清零（卖光后剩浮点残渣）时不能拿它做除数，否则是个爆炸的大数
+  assert.equal(grossAvgPriceOf(mk({ asset: 'a', size: 1e-9, grossInitialValue: 5 })), 0.5)
 })
