@@ -63,6 +63,14 @@ describe('下单表单手续费明细', () => {
     expect(html).toContain('买入 Over · $0.800163')
   })
 
+  it('市价单是吃单，不显示挂单奖励', () => {
+    const html = render({
+      rewardConfig: { dailyRate: 100, minSize: 50, maxSpreadCents: 3 },
+      bookLevels: { bids: [{ price: 0.49, size: 100 }], asks: [{ price: 0.5, size: 100 }] },
+    })
+    expect(html).not.toContain('挂单奖励池')
+  })
+
   it('英文也区分两项费用并标明预估', () => {
     setLang('en')
     const html = render()

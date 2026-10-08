@@ -15,10 +15,9 @@ import {
   MAX_R,
   MIN_R,
   R_OF_GAP,
-  convergeStrength,
   layoutSlots,
 } from './layout'
-import { isOuterSlot, TEMPLATE_SLOTS } from '../graph/template'
+import { isOuterSlot, TEMPLATE_EDGES, TEMPLATE_SLOTS } from '../graph/template'
 
 /** 模板槽位，只取排布需要的字段 */
 const SLOTS = TEMPLATE_SLOTS.map((s) => ({ key: s.key, x: s.x, y: s.y }))
@@ -224,52 +223,58 @@ test('R_OF_GAP < 0.5，保证相邻节点之间留得下连线', () => {
   assert.ok(R_OF_GAP < 0.5)
 })
 
-// ==================== 窄屏收束 ====================
+// ==================== 间距均匀 ====================
 
-test('收束强度随宽高比单调：越窄越强，且夹在 [0,1]', () => {
-  const ratios = [4, 2.4, 1.8, 1.2, 1, 0.75, 0.6, 0.3]
-  const ts = ratios.map((a) => convergeStrength(a * 100, 100))
-  for (const [i, t] of ts.entries()) {
-    assert.ok(t >= 0 && t <= 1, `宽高比 ${ratios[i]} 的强度 ${t} 越界`)
-  }
-  for (let i = 1; i < ts.length; i += 1) {
-    assert.ok(ts[i] >= ts[i - 1], `宽高比 ${ratios[i]} 更窄，强度反而更小`)
-  }
-  assert.equal(ts[0], 0, '极宽时应当完全不收')
-  assert.equal(ts[ts.length - 1], 1, '极窄时应当收到底')
-})
+/** 模板里每条边在当前容器下的长度，除以直径 —— 眼睛读到的间距就是它 */
+function edgeSpans(c: { w: number; h: number }) {
+  const visible = TEMPLATE_SLOTS.filter((s) => !isOuterSlot(s)).map((s) => ({
+    key: s.key,
+    x: s.x,
+    y: s.y,
+  }))
+  const { slots, r } = layoutSlots(visible, c)
+  const at = (k: string) => slots.find((s) => s.key === k)!
+  const lens = TEMPLATE_EDGES.filter(
+    ([a, b]) => visible.some((s) => s.key === a) && visible.some((s) => s.key === b),
+  )
+    .map(([a, b]) => {
+      const pa = at(a)
+      const pb = at(b)
+      return Math.hypot(pa.x - pb.x, pa.y - pb.y) / (2 * r)
+    })
+    .sort((x, y) => x - y)
+  const mean = lens.reduce((a, b) => a + b, 0) / lens.length
+  const sd = Math.sqrt(lens.reduce((a, b) => a + (b - mean) ** 2, 0) / lens.length)
+  return { r, min: lens[0], max: lens[lens.length - 1], cv: sd / mean }
+}
 
-test('收束确实是「向中轴收 + 上移」，且不会反方向', () => {
+test('竖屏上相邻节点的间距均匀：最长的一条边不超过最短的 1.6 倍', () => {
+  // 竖屏是这个问题的主场：x 被压扁、y 被拉长，各梯子的步长差被放大到 1.5 倍以上，
+  // 看上去就是「上面挤、下面散」。横屏另有一段历史遗留（横向步长比纵向长得多，
+  // DESKTOP 2.3 / ULTRAWIDE 3.3），这次只修竖屏，所以阈值只卡竖屏。
   for (const [name, c] of Object.entries(ALL)) {
-    const converged = layoutSlots(TEMPLATE_SLOTS, c).slots
-    const bare = layoutSlots(SLOTS, c).slots
-    const axis = converged.find((s) => s.key === 'goals_total')!.x
-    for (const k of ['goals_home', 'goals_away']) {
-      const now = converged.find((s) => s.key === k)!
-      const was = bare.find((s) => s.key === k)!
-      assert.ok(
-        Math.abs(now.x - axis) <= Math.abs(was.x - axis) + 1e-6,
-        `${name} ${k} 没有向中轴收`,
-      )
-      assert.ok(now.y <= was.y + 1e-6, `${name} ${k} 没有上移`)
-    }
+    if (c.w / c.h > 1) continue
+    const s = edgeSpans(c)
+    assert.ok(s.max / s.min < 1.6, `${name}: 间距差到 ${(s.max / s.min).toFixed(2)} 倍（${s.min.toFixed(2)}..${s.max.toFixed(2)}）`)
+    assert.ok(s.cv < 0.15, `${name}: 离散度 ${s.cv.toFixed(3)} 偏大`)
   }
 })
 
-test('收束不改变节点半径 —— 只挪位置，不重新缩放整张图', () => {
-  // 这是这次改动最容易被破坏的承诺：r 由「最近一对的间距 × R_OF_GAP」算出，
-  // 而中心那个三角正好是全图最近的一对。若 r 改成按收束后的位置算，全图的
-  // 圆都会跟着缩水。
-  for (const [name, c] of Object.entries(ALL)) {
-    const withConverge = layoutSlots(TEMPLATE_SLOTS, c).r
-    const without = layoutSlots(SLOTS, c).r
-    assert.equal(withConverge, without, `${name}: 半径被收束改动了 ${without} → ${withConverge}`)
+test('窄屏上节点不会因为调模板而变小', () => {
+  // 半径由「全图最近的一对 × R_OF_GAP」定，所以任何一次调模板都可能悄悄把
+  // 全图缩一圈。这三个数是这次调完好间距之后的实测值，往下卡住。
+  const got = {
+    '840x1570': layoutSlots(TEMPLATE_SLOTS.filter((s) => !isOuterSlot(s)), { w: 840, h: 1570 }).r,
+    '390x780': layoutSlots(TEMPLATE_SLOTS.filter((s) => !isOuterSlot(s)), { w: 390, h: 780 }).r,
+    '820x1100': layoutSlots(TEMPLATE_SLOTS.filter((s) => !isOuterSlot(s)), { w: 820, h: 1100 }).r,
   }
+  assert.ok(got['840x1570'] > 45, `手机画布半径只剩 ${got['840x1570'].toFixed(1)}`)
+  assert.ok(got['390x780'] > 21, `小屏手机半径只剩 ${got['390x780'].toFixed(1)}`)
+  assert.ok(got['820x1100'] > 37, `平板竖屏半径只剩 ${got['820x1100'].toFixed(1)}`)
 })
 
-test('收束是连续的：宽度连续变化时节点不跳变', () => {
+test('槽位位置对容器尺寸连续：拖窗口时不跳变', () => {
   // 拖窗口时宽度是连续变的，节点位置也必须连续 —— 否则会看到它「啪」地跳一格。
-  // 安全回退是按档试的，所以这里专门盯住台阶。
   let prev: { x: number; y: number } | null = null
   for (let w = 200; w <= 2400; w += 4) {
     const g = layoutSlots(TEMPLATE_SLOTS, { w, h: 900 }).slots.find((s) => s.key === 'goals_home')!

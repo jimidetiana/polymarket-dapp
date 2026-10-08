@@ -195,7 +195,7 @@ function collectMarkets(activity) {
   const mkt = new Map();
   for (const e of activity) {
     const cid = e.conditionId; if (!cid) continue;
-    const m = mkt.get(cid) || { cid, title: '', eventSlug: '', outcome: '', buys: [], sells: [], redeemPayout: 0 };
+    const m = mkt.get(cid) || { cid, title: '', eventSlug: '', outcome: '', buys: [], sells: [], redeemPayout: 0, redeemed: false };
     if (e.title) m.title = e.title; else if (e.slug && !m.title) m.title = e.slug;
     if (e.eventSlug) m.eventSlug = e.eventSlug;
     if (e.type === 'TRADE' && e.side === 'BUY' && e.outcome) m.outcome = e.outcome; // 以买入侧为准
@@ -203,7 +203,7 @@ function collectMarkets(activity) {
     const t = num(e.timestamp), size = num(e.size), u = num(e.usdcSize);
     if (e.type === 'TRADE' && e.side === 'BUY') m.buys.push({ t, size, u });
     else if (e.type === 'TRADE' && e.side === 'SELL') m.sells.push({ t, size, u });
-    else if (e.type === 'REDEEM') m.redeemPayout += u;
+    else if (e.type === 'REDEEM') { m.redeemPayout += u; m.redeemed = true; }
     mkt.set(cid, m);
   }
   return mkt;
@@ -228,14 +228,18 @@ function classifyMarket(m, pos, events) {
   const boughtPre = m.buys.filter((b) => !kickoff || b.t < kickoff).reduce((s, b) => s + b.size, 0);
   const soldPre = m.sells.filter((x) => !kickoff || x.t < kickoff).reduce((s, x) => s + x.size, 0);
   const exposureAtKickoff = boughtPre - soldPre;
+  // 开赛后才下的单（滚球）开赛时刻敞口是 0，但同样是真押注。
+  const tradedLive = kickoff > 0 && [...m.buys, ...m.sells].some((x) => x.t >= kickoff);
   const firstT = m.buys.length ? Math.min(...m.buys.map((b) => b.t))
     : m.sells.length ? Math.min(...m.sells.map((x) => x.t)) : 0;
 
   let status;
   if (hasRedeem) status = 'win';                                   // 持有到结算、赢并兑付
+  // 输了的仓位也会被 REDEEM（回款 $0），之后从 /positions 消失——只能靠这条账本记录认出来。
+  else if (m.redeemed) status = 'loss';
   else if (held && Boolean(p.redeemable)) status = num(p.curPrice) >= 0.5 ? 'win' : 'loss'; // 持有到结算
   else if (held) status = 'open';                                  // 还没结算
-  else if (kickoff > 0 && exposureAtKickoff > EPS) status = profit >= 0 ? 'win' : 'loss'; // 赛中/赛后了结
+  else if ((kickoff > 0 && exposureAtKickoff > EPS) || tradedLive) status = profit >= 0 ? 'win' : 'loss'; // 赛中/赛后了结
   else status = 'pretrade';                                        // 赛前平掉（或无开赛信息）→ 不计入
 
   let bucket, reason = '';

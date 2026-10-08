@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { buildMarketGraph } from '../graph/graph'
-import { resolveTemplate, TEMPLATE_EDGES } from '../graph/template'
+import { applyLivePrices, buildMarketGraph } from '../graph/graph'
+import { isOuterSlot, resolveTemplate, TEMPLATE_EDGES } from '../graph/template'
+import { compositeEdges } from '../graph/composite'
 import { setLang } from '../lib/i18n'
 import { MarketGraphCanvas } from './market-graph-canvas'
 
@@ -64,5 +65,91 @@ describe('触摸手势', () => {
     // 这个布局里页面不滚（h-dvh + main/容器 overflow-hidden），
     // 让出纵向滚动没有任何收益。
     expect(render()).toContain('touch-action:none')
+  })
+})
+
+describe('合成盘口的刻度层', () => {
+  const priced = (asks: Record<string, number>) => {
+    const markets = [
+      {
+        id: '1',
+        questionEn: 'Will Home FC win on 2026-08-30?',
+        outcomes: ['Yes', 'No'],
+        clobTokenIds: ['mlYes', 'mlNo'],
+        volume: 1000,
+      },
+      {
+        id: '2',
+        questionEn: 'Spread: Home FC (-1.5)',
+        line: -1.5,
+        outcomes: ['Home FC', 'Away FC'],
+        clobTokenIds: ['sp15Home', 'sp15Away'],
+        volume: 1000,
+      },
+      {
+        id: '3',
+        questionEn: 'Spread: Home FC (-2.5)',
+        line: -2.5,
+        outcomes: ['Home FC', 'Away FC'],
+        clobTokenIds: ['sp25Home', 'sp25Away'],
+        volume: 1000,
+      },
+    ]
+    const g0 = buildMarketGraph({ id: 'test', homeTeamEn: 'Home FC', awayTeamEn: 'Away FC' }, markets)
+    const first = resolveTemplate(g0, goals)
+    const quotes: Record<string, { bid: number | null; ask: number | null }> = {}
+    for (const s of first) {
+      if (!s.tokenId) continue
+      quotes[s.tokenId] = { bid: null, ask: asks[s.key] ?? null }
+    }
+    return applyLivePrices(g0, quotes)
+  }
+
+  const renderPriced = (asks: Record<string, number>) => {
+    const g = priced(asks)
+    return renderToStaticMarkup(
+      <MarketGraphCanvas
+        graph={g}
+        slots={resolveTemplate(g, goals)}
+        templateEdges={TEMPLATE_EDGES}
+        goals={goals}
+        priceMode="prob"
+        prevPrices={{}}
+        selectedKey={null}
+        onSelect={vi.fn()}
+      />,
+    )
+  }
+
+  it('静止时不画任何刻度：命中层是透明的，标签一个字都不出现', () => {
+    const html = renderPriced({ ml_home: 0.5, 'sp_home_-1.5': 0.25 })
+    expect(html).toContain('stroke="transparent"')
+    // 没有悬停就没有标签 —— 静止的画布与加这个功能之前完全一样
+    expect(html).not.toContain('两腿都赢')
+    expect(html).not.toContain('缺卖价')
+  })
+
+  it('命中线只画在可合成的边上，数量与判据一致', () => {
+    const g = priced({})
+    const slots = resolveTemplate(g, goals)
+    const expected = compositeEdges(
+      slots.filter((s) => !isOuterSlot(s)),
+      TEMPLATE_EDGES,
+    ).length
+    const html = renderToStaticMarkup(
+      <MarketGraphCanvas
+        graph={g}
+        slots={slots}
+        templateEdges={TEMPLATE_EDGES}
+        goals={goals}
+        priceMode="prob"
+        prevPrices={{}}
+        selectedKey={null}
+        onSelect={vi.fn()}
+      />,
+    )
+    expect(expected).toBeGreaterThan(0)
+    // 只数 <line>：节点也有 stroke="transparent"（绑了盘口但没选中时就是透明描边）
+    expect(html.match(/<line\b[^>]*stroke="transparent"/g)).toHaveLength(expected)
   })
 })

@@ -45,8 +45,19 @@ import { tr, useLang } from '@/lib/i18n'
 import { PALETTES, DEFAULT_PALETTE, type TeamPaletteKey } from '@/lib/palette'
 import { positionKind, slotPositionMark, type PositionIndex, type SlotPositionMark } from '@/lib/positions'
 import type { GraphGoalCounts, GraphNode, GraphSlot, MarketGraph } from '@/types/market-graph'
-import { BASE_R, layoutSlots } from '@/lib/layout'
+import { BASE_R, layoutSlots, type Pt } from '@/lib/layout'
 import { isOuterSlot } from '@/graph/template'
+import {
+  ANCHOR_DS,
+  anchorT,
+  compositeEdges,
+  formatLine,
+  lineLabel,
+  lineOf,
+  nearestAnchorD,
+  oddsOf,
+  weightsLabel,
+} from '@/graph/composite'
 import {
   IDENTITY,
   MIN_K,
@@ -163,6 +174,63 @@ function labelFont(label: string): number {
   return 17
 }
 
+/**
+ * 合成边的命中带宽度（用户坐标，也就是未放大时的像素）。
+ *
+ * 连线本身只有 5·nodeScale 宽，按它做命中判定几乎点不中，触屏更不可能。
+ * 加一条**透明**的粗线专门吃指针事件；它在节点之下，所以节点上的点击照常优先。
+ */
+const COMPOSITE_HIT_W = 26
+
+/** 指针离线段多近算悬停。与命中带同量级 */
+const COMPOSITE_HOVER_PX = 18
+
+/** 悬停标签底边与那个点之间的距离（用户坐标，也就是未放大时的像素） */
+const COMPOSITE_LABEL_GAP = 26
+
+/** 点到线段的距离。合成边的悬停判定用 */
+function distToSegment(p: Pt, a: Pt, b: Pt): number {
+  const q = nearestOnSegment(p, a, b)
+  return Math.hypot(p.x - q.x, p.y - q.y)
+}
+
+/** 点在线段上的最近点 */
+function nearestOnSegment(p: Pt, a: Pt, b: Pt): Pt {
+  const dx = b.x - a.x
+  const dy = b.y - a.y
+  const len2 = dx * dx + dy * dy
+  if (!(len2 > 0)) return { x: a.x, y: a.y }
+  const t = Math.min(1, Math.max(0, ((p.x - a.x) * dx + (p.y - a.y) * dy) / len2))
+  return { x: a.x + dx * t, y: a.y + dy * t }
+}
+
+/**
+ * 点**沿线段**从 a 走到 b 的比例，夹在 0~1。
+ *
+ * 合成比例按几何位置算，所以比例就是画面上看到的那个位置 —— 这也是"靠近主胜
+ * 四分之一处 = -0.75"能在界面上成立的原因。
+ */
+function tOnSegment(p: Pt, a: Pt, b: Pt): number {
+  const dx = b.x - a.x
+  const dy = b.y - a.y
+  const len2 = dx * dx + dy * dy
+  if (!(len2 > 0)) return 0.5
+  return Math.min(1, Math.max(0, ((p.x - a.x) * dx + (p.y - a.y) * dy) / len2))
+}
+
+/**
+ * 估一段文字的宽度，用来给悬浮标签配底框。
+ *
+ * SVG 没有"量文字"这回事（要量得挂一次 DOM），而这里只需要一个略宽的底框，
+ * 估就够了：中日韩字符按 1 个字号、其余按 0.55。估窄了字会溢出底框，所以
+ * 宁可略估宽。
+ */
+function estTextWidth(text: string, size: number): number {
+  let units = 0
+  for (const ch of text) units += ch.charCodeAt(0) > 0x2e80 ? 1 : 0.55
+  return units * size
+}
+
 /** 该线是否已被进球打出。规则与后端 isSlotHit 一致 */
 function slotHit(s: GraphSlot, goals: GraphGoalCounts | null): boolean | null {
   if (s.hitNeed == null || s.hitSubject == null || !goals) return null
@@ -197,6 +265,19 @@ export function MarketGraphCanvas({
   const palette = PALETTES[paletteKey]
   useLang()
   const [hover, setHover] = useState<GraphSlot | null>(null)
+  /**
+   * 当前选中的**合成线**：哪条边、哪个锚点（0.25/0.5/0.75，即 -0.75/-1/-1.25）、
+   * 有没有被点住。
+   *
+   * 存的是锚点而不是"沿边走了多远"：权重由两腿的赔率定，几何位置只负责选线
+   * （见 graph/composite.ts 顶部）。存几何比例会让人以为比例是拖出来的。
+   *
+   * 也只存 id 与锚点、不存算好的权重 —— 盘口价每几秒变一次，而权重就是由价
+   * 推出来的，存快照会让标签上的数字停在打开那一刻，那正是要拿来做判断的数。
+   *
+   * pinned：点一下就钉住，方便把两腿的价和手工算的数对着看；再点或点空白处解除。
+   */
+  const [composite, setComposite] = useState<{ id: string; d: number; pinned: boolean } | null>(null)
   const [expanded, setExpanded] = useState(false)
   const visibleSlots = useMemo(
     () => expanded ? slots : slots.filter((s) => !isOuterSlot(s)),
@@ -254,6 +335,14 @@ export function MarketGraphCanvas({
     return m
   }, [placed])
 
+  /**
+   * 可合成的边（同一条让球梯子上只差一档的两端）。
+   *
+   * 每帧重算，不缓存结果：盘口价一动，两腿"有没有卖价"就跟着变。缓存成
+   * "这条边可合成"的布尔值，就得再维护一套失效通知 —— 而现算的量永远不老。
+   */
+  const composites = useMemo(() => compositeEdges(visibleSlots, templateEdges), [visibleSlots, templateEdges])
+
   const [view, setView] = useState<View>(IDENTITY)
 
   /**
@@ -264,6 +353,8 @@ export function MarketGraphCanvas({
    */
   useEffect(() => {
     setView(IDENTITY)
+    // 换比赛的边和价格全变了，钉住的合成点指向的是上一场的两腿，一并收掉
+    setComposite(null)
   }, [graph.nodes])
 
   /** 容器内相对坐标。事件给的是页面坐标，必须减掉容器位置 */
@@ -383,6 +474,73 @@ export function MarketGraphCanvas({
     setView((v) => zoomAt(v, u, factor, box))
   }
 
+  /**
+   * 合成边的悬停判定。
+   *
+   * 判定放在容器这一层、按"指针离哪条线段最近"算，而不是给每条边挂
+   * onPointerEnter/Leave：粗命中带互相重叠，而且指针一移到悬浮标签上就会先
+   * 离开那条边，标签自己闪掉。按距离判只有一个来源，也不怕重叠。
+   *
+   * 指针坐标要走 clientToUser 换算：画布能缩放平移，直接拿页面坐标量距离
+   * 在放大后会判到别处去。
+   */
+  const onHoverMove = (e: React.MouseEvent) => {
+    if (drag.current.pointers.size > 0) return // 拖拽 / 捏合中不判定
+    if (composites.length === 0) return
+    const { px, py } = localPoint(e)
+    const u = clientToUser(px, py, size, box, view)
+    let best: { id: string; d: number; dist: number } | null = null
+    for (const c of composites) {
+      const pa = posByKey.get(c.from.slotKey)
+      const pb = posByKey.get(c.to.slotKey)
+      if (!pa || !pb) continue
+      const dist = distToSegment(u, pa, pb)
+      if (dist > COMPOSITE_HOVER_PX) continue
+      // 指针落在线段上的位置只用来**选锚点**，不参与算权重
+      const d = nearestAnchorD(c, tOnSegment(u, pa, pb))
+      if (!best || dist < best.dist) best = { id: c.id, d, dist }
+    }
+    setComposite((cur) => {
+      if (cur?.pinned) return cur // 钉住的点不跟着指针跑
+      return best ? { id: best.id, d: best.d, pinned: false } : null
+    })
+  }
+
+  /** 点一下钉住 / 解除。触屏没有悬停，这条是触屏上唯一的入口 */
+  const pinComposite = (id: string, d: number) => {
+    setComposite((cur) =>
+      cur?.pinned && cur.id === id && cur.d === d ? { id, d, pinned: false } : { id, d, pinned: true },
+    )
+  }
+
+  /**
+   * 当前要画的合成线。线名、权重、赔率都在这里现算 —— 每一步都跟着最新的报价走，
+   * 不存快照（见 composite state 的注释）。
+   */
+  const active = useMemo(() => {
+    if (!composite) return null
+    const edge = composites.find((x) => x.id === composite.id)
+    if (!edge) return null
+    const pa = posByKey.get(edge.from.slotKey)
+    const pb = posByKey.get(edge.to.slotKey)
+    if (!pa || !pb) return null
+    const d = composite.d
+    const t = anchorT(edge, d)
+    return {
+      edge,
+      d,
+      pa,
+      pb,
+      t,
+      x: pa.x + (pb.x - pa.x) * t,
+      y: pa.y + (pb.y - pa.y) * t,
+      line: lineLabel(edge, d),
+      // 缺卖价时这两个是 null —— 比例本身就是由赔率推出来的，没有价就没有比例
+      weights: weightsLabel(edge, d),
+      odds: oddsOf(edge, d),
+    }
+  }, [composite, composites, posByKey])
+
   const zoomed = isZoomed(view)
 
   return (
@@ -408,6 +566,12 @@ export function MarketGraphCanvas({
       onPointerMove={onPointerMove}
       onPointerUp={endPointer}
       onPointerCancel={endPointer}
+      // 合成边的悬停。鼠标专属：触屏上点是唯一的入口（见 pinComposite）
+      onMouseMove={onHoverMove}
+      onMouseLeave={() => {
+        // 指针离开画布：没钉住的点收起来。钉住的不动
+        setComposite((cur) => (cur?.pinned ? cur : null))
+      }}
     >
       <svg
         // viewBox 由 layoutSlots 给，与容器 1:1 —— 槽位坐标已经按容器比例
@@ -416,7 +580,10 @@ export function MarketGraphCanvas({
         className={cn('h-full w-full', zoomed && 'cursor-grab')}
         onClick={(e) => {
           if (wasDrag()) return
-          if (e.target === e.currentTarget) onSelect(null)
+          if (e.target === e.currentTarget) {
+            onSelect(null)
+            setComposite(null) // 点空白处收掉钉住的合成点
+          }
         }}
       >
         {/* 缩放平移只作用在这一层：viewBox 固定，留边只在 baseScale 里算一次 */}
@@ -442,6 +609,40 @@ export function MarketGraphCanvas({
                 // 被粗线压住（原来 viewBox 有 0.58 的缩放，视觉上只有 3px）。
                 strokeWidth={5 * nodeScale}
                 opacity={dim ? 0.15 : 0.65}
+              />
+            )
+          })}
+        </g>
+
+        {/*
+          合成边的命中层。**透明的加粗线**，视觉上完全不存在，只负责吃指针事件 ——
+          连线本身只有 5·nodeScale 宽，按它判几乎点不中，触屏更不可能。
+
+          画在连线之后、节点之前：节点压在上面，所以节点上的点击照常优先。
+        */}
+        <g>
+          {composites.map((c) => {
+            const pa = posByKey.get(c.from.slotKey)
+            const pb = posByKey.get(c.to.slotKey)
+            if (!pa || !pb) return null
+            return (
+              <line
+                key={c.id}
+                x1={pa.x}
+                y1={pa.y}
+                x2={pb.x}
+                y2={pb.y}
+                stroke="transparent"
+                strokeWidth={COMPOSITE_HIT_W}
+                style={{ cursor: 'crosshair' }}
+                onClick={(ev) => {
+                  ev.stopPropagation()
+                  // 拖动结束浏览器也会派发 click，少了这道判断，在边上平移会误钉一个点
+                  if (wasDrag()) return
+                  const { px, py } = localPoint(ev)
+                  const u = clientToUser(px, py, size, box, view)
+                  pinComposite(c.id, nearestAnchorD(c, tOnSegment(u, pa, pb)))
+                }}
               />
             )
           })}
@@ -702,6 +903,121 @@ export function MarketGraphCanvas({
             )
           })}
         </g>
+
+        {/*
+          合成刻度层。**只在悬停或钉住时出现** —— 静止时画布和以前一模一样，
+          这也是"不让页面变复杂"的全部代价：没有新按钮、没有新面板。
+
+          画在节点之后（最上层），否则标签会被节点圆盖住。整层 pointerEvents=none：
+          指针要能继续落在下面那条透明命中带上，否则标签一出现就自己把自己关掉。
+        */}
+        {active && (
+          <g pointerEvents="none">
+            {/* 选中的那条边压一条亮线，让人看得出这个点是从哪条边量出来的 */}
+            <line
+              x1={active.pa.x}
+              y1={active.pa.y}
+              x2={active.pb.x}
+              y2={active.pb.y}
+              stroke="var(--color-info)"
+              strokeWidth={7 * nodeScale}
+              strokeLinecap="round"
+              opacity={0.4}
+            />
+
+            {/*
+              三个锚点，各带自己的线值。它们就是这条边上**全部有名字的标准盘口**
+              （-0.75 / -1 / -1.25）：权重由赔率定，几何位置只负责选线，所以没有
+              自由拖动 —— 拖到四分之一处却拿到 60/40 的权重，比不给这个功能更糟。
+            */}
+            {ANCHOR_DS.map((d) => {
+              const t = anchorT(active.edge, d)
+              const ax = active.pa.x + (active.pb.x - active.pa.x) * t
+              const ay = active.pa.y + (active.pb.y - active.pa.y) * t
+              const picked = d === active.d
+              return (
+                <g key={d} transform={`translate(${ax} ${ay}) scale(${nodeScale})`}>
+                  <circle
+                    r={picked ? 10 : 6}
+                    fill={picked ? 'var(--color-info)' : 'var(--color-card)'}
+                    stroke={picked ? '#ffffff' : 'var(--pm-border)'}
+                    strokeWidth={picked ? 3 : 2}
+                  />
+                  <text
+                    y={picked ? 32 : 25}
+                    textAnchor="middle"
+                    fill={picked ? 'var(--color-foreground)' : 'var(--pm-neutral-500)'}
+                    style={{ fontSize: picked ? 17 : 15, fontWeight: picked ? 700 : 400 }}
+                  >
+                    {formatLine(lineOf(active.edge, d))}
+                  </text>
+                </g>
+              )
+            })}
+
+            {(() => {
+              const missing = tr('缺卖价，比例与合成价都算不出来', 'No ask — neither the ratio nor the price can be computed')
+              const lines = [
+                { text: active.line, size: 21, weight: 700, fill: 'var(--color-foreground)' },
+                active.weights
+                  ? { text: active.weights, size: 17, weight: 400, fill: 'var(--pm-neutral-500)' }
+                  : { text: missing, size: 15, weight: 400, fill: 'var(--pm-state-warning)' },
+                ...(active.odds != null
+                  ? [
+                      {
+                        text: tr(`两腿都赢 ${active.odds.toFixed(2)} 倍`, `${active.odds.toFixed(2)}x if both win`),
+                        size: 17,
+                        weight: 400,
+                        fill: 'var(--color-foreground)',
+                      },
+                    ]
+                  : []),
+                {
+                  text: tr('点击固定 · 再点取消', 'Click to pin · click again to release'),
+                  size: 14,
+                  weight: 400,
+                  fill: 'var(--pm-neutral-400)',
+                },
+              ]
+              const w = Math.max(...lines.map((l) => estTextWidth(l.text, l.size))) + 26
+              const h = lines.reduce((s, l) => s + l.size + 9, 0) + 18
+              // 底框居上、夹在画布内：靠边的节点上悬停时标签会跑出视野。
+              // 上方放不下就翻到下面 —— 图顶那几档（总进球高档）就属于这种情况。
+              const half = (w * nodeScale) / 2
+              const cx = Math.min(Math.max(active.x, box.x + half + 6), box.x + box.w - half - 6)
+              const above = active.y - COMPOSITE_LABEL_GAP - h * nodeScale >= box.y + 6
+              const top = above ? -h : 0
+              const cy = above ? active.y - COMPOSITE_LABEL_GAP : active.y + COMPOSITE_LABEL_GAP
+              return (
+                <g transform={`translate(${cx} ${cy}) scale(${nodeScale})`}>
+                  <rect
+                    x={-w / 2}
+                    y={top}
+                    width={w}
+                    height={h}
+                    rx={10}
+                    fill="var(--color-card)"
+                    stroke="var(--pm-border)"
+                    strokeWidth={1.5}
+                    opacity={0.97}
+                  />
+                  {lines.map((l, i) => (
+                    <text
+                      key={i}
+                      x={0}
+                      y={top + 22 + lines.slice(0, i).reduce((s, x) => s + x.size + 9, 0)}
+                      textAnchor="middle"
+                      fill={l.fill}
+                      style={{ fontSize: l.size, fontWeight: l.weight }}
+                    >
+                      {l.text}
+                    </text>
+                  ))}
+                </g>
+              )
+            })()}
+          </g>
+        )}
         </g>
       </svg>
 

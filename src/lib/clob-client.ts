@@ -19,7 +19,7 @@
  * 搞反会 401。SDK 内部已处理，别改回去。
  */
 import { createPublicClient, createSecureClient, OrderSide, remoteBuilderSigning, type SecureClient } from '@polymarket/client'
-import { fetchBuilderFeeRates, fetchMarketInfo } from '@polymarket/client/actions'
+import { fetchBuilderFeeRates, fetchMarketInfo, listMarketRewards } from '@polymarket/client/actions'
 import { signerFrom } from '@polymarket/client/viem'
 import { createPublicClient as createViemPublicClient, erc1155Abi, erc20Abi, http, type WalletClient } from 'viem'
 import { polygon } from 'viem/chains'
@@ -28,6 +28,7 @@ import { tr } from './i18n'
 import { resolveSigningUrl, resetSigningUrl } from './polymarket-config'
 import { PUSD_POLYGON } from './proxy-wallet'
 import type { MarketFee } from './fee'
+import { toRewardConfig, type RewardConfig } from './rewards'
 
 export type OrderSideName = 'BUY' | 'SELL'
 export type OrderKind = 'market' | 'limit'
@@ -120,6 +121,16 @@ export async function fetchPolymarketFee(conditionId: string): Promise<MarketFee
     throw new Error('Invalid Polymarket market fee')
   }
   return feeInfo
+}
+
+/**
+ * 盘口的流动性奖励配置（CLOB `/rewards/markets/{conditionId}`，免鉴权）。
+ * 没有生效中的奖池返回 null。Gamma 的列表接口不带 clobRewards，所以不从那里取。
+ */
+export async function fetchRewardConfig(conditionId: string): Promise<RewardConfig | null> {
+  const page = await listMarketRewards(publicClient, { conditionId }).firstPage()
+  const m = page.items.find((r) => r.conditionId.toLowerCase() === conditionId.toLowerCase()) ?? page.items[0]
+  return m ? toRewardConfig(m) : null
 }
 
 // ── 已认证客户端（每个签名地址一个，缓存 Promise）──────────

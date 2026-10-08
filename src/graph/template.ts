@@ -71,14 +71,6 @@ export interface TemplateSlot {
   /** SVG 坐标（已按设计稿翻转 Y） */
   x: number
   y: number
-  /**
-   * 窄屏收束的**目标位置**：容器越窄，这个槽位越向 (x, y) 靠拢（见
-   * lib/layout.ts 的 convergeStrength / convergePositions）。
-   *
-   * 目前只有中心那两条腿（主队进球 / 客队进球）带这个字段。原因见
-   * TEMPLATE_SLOTS 上方的说明。
-   */
-  converge?: { x: number; y: number }
   bind?: SlotBind
   /** kind=goals 时算哪个主体的进球数 */
   goalsOf?: 'total' | 'home' | 'away'
@@ -88,8 +80,20 @@ export interface TemplateSlot {
  * 固定槽位关于 x = 693 镜像：全场大小球沿两列向上交替，单队大小球向两翼延伸，
  * 让球沿四列向下延伸。各梯子的步长固定，不能按某场比赛的盘口数量改变位置。
  *
- * 中心「主队进球 / 客队进球」带 converge：窄屏时向中轴收并上移，
- * 但不能挤到其他节点；安全回退由 lib/layout.ts 处理。
+ * ## 步长要「互相看得齐」，不只是各自齐
+ *
+ * 每个梯子内部等步长是必要条件，但不充分：屏幕上的实际间距还要乘上
+ * lib/layout.ts 那个按容器比例**各轴独立**的拉伸（竖屏纵向拉长、横屏横向拉长），
+ * 于是**同一段长度在不同方向的梯子上会被拉成不同的像素**。哪一把梯子最短，
+ * 它就决定全图半径 —— 别的梯子再松散也只是陪跑。
+ *
+ * 原来两翼最短（√(189²+109²)≈218，全场大小球和让球分别 ≈321 / ≈413），
+ * 竖屏上两翼的相邻节点只有 1.21 个直径，而全场大小球和让球有 1.86 / 2.43，
+ * 一眼就看得出「上面挤、下面散」。所以两翼的纵向步长按全场大小球那一档提到
+ * 174（√(189²+174²)≈257），既把自己松开，也把全图半径抬高约一成。
+ *
+ * 同理让球四列从 ±140 挪到 ±156 —— 原来的列距是 327 / 280 / 327，
+ * 中间那一对明显更近；±156 正好把三段列距等分成 311。
  *
  * Y 是 SVG 向下坐标，新增档位沿原有梯子等步长外推。
  */
@@ -114,39 +118,36 @@ export const TEMPLATE_SLOTS: TemplateSlot[] = [
   { key: 'total_0.5', label: '总进球 0.5', kind: 'market', x: 561, y: 626,
     bind: { family: 'ou', period: 'ft', subject: 'match', line: 0.5, side: 'over' } },
 
-  // ---- 单队大小球（两翼），从中心向外上方延伸。两侧同一把梯子，步长 (189, 109) ----
-  { key: 'home_5.5', label: '主队总进球 5.5', kind: 'market', x: -630, y: 363,
+  // ---- 单队大小球（两翼），从中心向外上方延伸。两侧同一把梯子，步长 (189, 174) ----
+  { key: 'home_5.5', label: '主队总进球 5.5', kind: 'market', x: -630, y: 38,
     bind: { family: 'ou', period: 'ft', subject: 'home', line: 5.5, side: 'over' } },
-  { key: 'away_5.5', label: '客队总进球 5.5', kind: 'market', x: 2016, y: 363,
+  { key: 'away_5.5', label: '客队总进球 5.5', kind: 'market', x: 2016, y: 38,
     bind: { family: 'ou', period: 'ft', subject: 'away', line: 5.5, side: 'over' } },
-  { key: 'home_4.5', label: '主队总进球 4.5', kind: 'market', x: -441, y: 472,
+  { key: 'home_4.5', label: '主队总进球 4.5', kind: 'market', x: -441, y: 212,
     bind: { family: 'ou', period: 'ft', subject: 'home', line: 4.5, side: 'over' } },
-  { key: 'away_4.5', label: '客队总进球 4.5', kind: 'market', x: 1827, y: 472,
+  { key: 'away_4.5', label: '客队总进球 4.5', kind: 'market', x: 1827, y: 212,
     bind: { family: 'ou', period: 'ft', subject: 'away', line: 4.5, side: 'over' } },
-  { key: 'home_3.5', label: '主队总进球 3.5', kind: 'market', x: -252, y: 581,
+  { key: 'home_3.5', label: '主队总进球 3.5', kind: 'market', x: -252, y: 386,
     bind: { family: 'ou', period: 'ft', subject: 'home', line: 3.5, side: 'over' } },
-  { key: 'away_3.5', label: '客队总进球 3.5', kind: 'market', x: 1638, y: 581,
+  { key: 'away_3.5', label: '客队总进球 3.5', kind: 'market', x: 1638, y: 386,
     bind: { family: 'ou', period: 'ft', subject: 'away', line: 3.5, side: 'over' } },
-  { key: 'home_2.5', label: '主队总进球 2.5', kind: 'market', x: -63, y: 690,
+  { key: 'home_2.5', label: '主队总进球 2.5', kind: 'market', x: -63, y: 560,
     bind: { family: 'ou', period: 'ft', subject: 'home', line: 2.5, side: 'over' } },
-  { key: 'away_2.5', label: '客队总进球 2.5', kind: 'market', x: 1449, y: 690,
+  { key: 'away_2.5', label: '客队总进球 2.5', kind: 'market', x: 1449, y: 560,
     bind: { family: 'ou', period: 'ft', subject: 'away', line: 2.5, side: 'over' } },
-  { key: 'home_1.5', label: '主队总进球 1.5', kind: 'market', x: 126, y: 799,
+  { key: 'home_1.5', label: '主队总进球 1.5', kind: 'market', x: 126, y: 734,
     bind: { family: 'ou', period: 'ft', subject: 'home', line: 1.5, side: 'over' } },
-  { key: 'away_1.5', label: '客队总进球 1.5', kind: 'market', x: 1260, y: 799,
+  { key: 'away_1.5', label: '客队总进球 1.5', kind: 'market', x: 1260, y: 734,
     bind: { family: 'ou', period: 'ft', subject: 'away', line: 1.5, side: 'over' } },
   { key: 'home_0.5', label: '主队总进球 0.5', kind: 'market', x: 315, y: 908,
     bind: { family: 'ou', period: 'ft', subject: 'home', line: 0.5, side: 'over' } },
   { key: 'away_0.5', label: '客队总进球 0.5', kind: 'market', x: 1071, y: 908,
     bind: { family: 'ou', period: 'ft', subject: 'away', line: 0.5, side: 'over' } },
 
-  // ---- 中心三个：无盘口，显示推断进球数。下面两个关于轴线 ±126 ----
-  // 后两个带 converge：窄屏时收到 ±86 并上移 61（落差 171 → 110），见上方说明。
+  // ---- 中心三个：无盘口，显示推断进球数。下面两个关于轴线 ±145 ----
   { key: 'goals_total', label: '进球', kind: 'goals', x: 693, y: 846, goalsOf: 'total' },
-  { key: 'goals_home', label: '主队进球', kind: 'goals', x: 567, y: 1017, goalsOf: 'home',
-    converge: { x: 607, y: 956 } },
-  { key: 'goals_away', label: '客队进球', kind: 'goals', x: 819, y: 1017, goalsOf: 'away',
-    converge: { x: 779, y: 956 } },
+  { key: 'goals_home', label: '主队进球', kind: 'goals', x: 548, y: 1017, goalsOf: 'home' },
+  { key: 'goals_away', label: '客队进球', kind: 'goals', x: 838, y: 1017, goalsOf: 'away' },
 
   // ---- 胜平负。三个同一行，两侧关于轴线 ±285 ----
   { key: 'ml_home', label: '主胜', kind: 'market', x: 408, y: 1220,
@@ -156,45 +157,45 @@ export const TEMPLATE_SLOTS: TemplateSlot[] = [
   { key: 'ml_away', label: '客胜', kind: 'market', x: 978, y: 1220,
     bind: { family: 'moneyline', period: 'ft', role: 'away', side: 'yes' } },
 
-  // ---- 让球（图的下半）。四列 226 / 553 / 833 / 1160（关于轴线 ±467 / ±140），
+  // ---- 让球（图的下半）。四列 226 / 537 / 849 / 1160（关于轴线 ±467 / ±156，列距 311 等分），
   //      五行从 1411 起，步长 252。line 以 subject 视角，side 决定取哪侧价 ----
   { key: 'sp_home_-1.5', label: '主队 -1.5', kind: 'market', x: 226, y: 1411,
     bind: { family: 'spread', period: 'ft', subject: 'home', line: -1.5, side: 'home' } },
-  { key: 'sp_home_+1.5', label: '主队 +1.5', kind: 'market', x: 553, y: 1411,
+  { key: 'sp_home_+1.5', label: '主队 +1.5', kind: 'market', x: 537, y: 1411,
     bind: { family: 'spread', period: 'ft', subject: 'home', line: 1.5, side: 'home' } },
-  { key: 'sp_away_-1.5', label: '客队 -1.5', kind: 'market', x: 833, y: 1411,
+  { key: 'sp_away_-1.5', label: '客队 -1.5', kind: 'market', x: 849, y: 1411,
     bind: { family: 'spread', period: 'ft', subject: 'away', line: -1.5, side: 'away' } },
   { key: 'sp_away_+1.5', label: '客队 +1.5', kind: 'market', x: 1160, y: 1411,
     bind: { family: 'spread', period: 'ft', subject: 'away', line: 1.5, side: 'away' } },
   { key: 'sp_home_-2.5', label: '主队 -2.5', kind: 'market', x: 226, y: 1663,
     bind: { family: 'spread', period: 'ft', subject: 'home', line: -2.5, side: 'home' } },
-  { key: 'sp_home_+2.5', label: '主队 +2.5', kind: 'market', x: 553, y: 1663,
+  { key: 'sp_home_+2.5', label: '主队 +2.5', kind: 'market', x: 537, y: 1663,
     bind: { family: 'spread', period: 'ft', subject: 'home', line: 2.5, side: 'home' } },
-  { key: 'sp_away_-2.5', label: '客队 -2.5', kind: 'market', x: 833, y: 1663,
+  { key: 'sp_away_-2.5', label: '客队 -2.5', kind: 'market', x: 849, y: 1663,
     bind: { family: 'spread', period: 'ft', subject: 'away', line: -2.5, side: 'away' } },
   { key: 'sp_away_+2.5', label: '客队 +2.5', kind: 'market', x: 1160, y: 1663,
     bind: { family: 'spread', period: 'ft', subject: 'away', line: 2.5, side: 'away' } },
   { key: 'sp_home_-3.5', label: '主队 -3.5', kind: 'market', x: 226, y: 1915,
     bind: { family: 'spread', period: 'ft', subject: 'home', line: -3.5, side: 'home' } },
-  { key: 'sp_home_+3.5', label: '主队 +3.5', kind: 'market', x: 553, y: 1915,
+  { key: 'sp_home_+3.5', label: '主队 +3.5', kind: 'market', x: 537, y: 1915,
     bind: { family: 'spread', period: 'ft', subject: 'home', line: 3.5, side: 'home' } },
-  { key: 'sp_away_-3.5', label: '客队 -3.5', kind: 'market', x: 833, y: 1915,
+  { key: 'sp_away_-3.5', label: '客队 -3.5', kind: 'market', x: 849, y: 1915,
     bind: { family: 'spread', period: 'ft', subject: 'away', line: -3.5, side: 'away' } },
   { key: 'sp_away_+3.5', label: '客队 +3.5', kind: 'market', x: 1160, y: 1915,
     bind: { family: 'spread', period: 'ft', subject: 'away', line: 3.5, side: 'away' } },
   { key: 'sp_home_-4.5', label: '主队 -4.5', kind: 'market', x: 226, y: 2167,
     bind: { family: 'spread', period: 'ft', subject: 'home', line: -4.5, side: 'home' } },
-  { key: 'sp_home_+4.5', label: '主队 +4.5', kind: 'market', x: 553, y: 2167,
+  { key: 'sp_home_+4.5', label: '主队 +4.5', kind: 'market', x: 537, y: 2167,
     bind: { family: 'spread', period: 'ft', subject: 'home', line: 4.5, side: 'home' } },
-  { key: 'sp_away_-4.5', label: '客队 -4.5', kind: 'market', x: 833, y: 2167,
+  { key: 'sp_away_-4.5', label: '客队 -4.5', kind: 'market', x: 849, y: 2167,
     bind: { family: 'spread', period: 'ft', subject: 'away', line: -4.5, side: 'away' } },
   { key: 'sp_away_+4.5', label: '客队 +4.5', kind: 'market', x: 1160, y: 2167,
     bind: { family: 'spread', period: 'ft', subject: 'away', line: 4.5, side: 'away' } },
   { key: 'sp_home_-5.5', label: '主队 -5.5', kind: 'market', x: 226, y: 2419,
     bind: { family: 'spread', period: 'ft', subject: 'home', line: -5.5, side: 'home' } },
-  { key: 'sp_home_+5.5', label: '主队 +5.5', kind: 'market', x: 553, y: 2419,
+  { key: 'sp_home_+5.5', label: '主队 +5.5', kind: 'market', x: 537, y: 2419,
     bind: { family: 'spread', period: 'ft', subject: 'home', line: 5.5, side: 'home' } },
-  { key: 'sp_away_-5.5', label: '客队 -5.5', kind: 'market', x: 833, y: 2419,
+  { key: 'sp_away_-5.5', label: '客队 -5.5', kind: 'market', x: 849, y: 2419,
     bind: { family: 'spread', period: 'ft', subject: 'away', line: -5.5, side: 'away' } },
   { key: 'sp_away_+5.5', label: '客队 +5.5', kind: 'market', x: 1160, y: 2419,
     bind: { family: 'spread', period: 'ft', subject: 'away', line: 5.5, side: 'away' } },

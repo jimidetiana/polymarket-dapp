@@ -27,6 +27,7 @@ import {
   fetchBook,
   fetchFeeRates,
   fetchPolymarketFee,
+  fetchRewardConfig,
   getReadClient,
   getSecureClient,
   listOpenOrders,
@@ -40,6 +41,7 @@ import {
   type SecureClientRequest,
 } from './clob-client'
 import { describeDiff, diffOpenOrders } from './open-orders'
+import type { RewardConfig } from './rewards'
 
 // 代理地址的读法搬去了 lib/use-wallet.ts（那边不引 SDK，主包能用）。
 // 这里转出去是为了不动既有调用点，新代码请直接从 lib/use-wallet 引。
@@ -243,6 +245,23 @@ export function usePolymarketFee(conditionId: string | null): MarketFee {
   }, [q.error])
 
   return q.data ?? POLYMARKET_SPORTS_FEE
+}
+
+/** 盘口的流动性奖励配置。查不到或没有奖池都是 null，界面就不显示那一行。 */
+export function useRewardConfig(conditionId: string | null): RewardConfig | null {
+  const q = useQuery({
+    queryKey: ['reward-config', conditionId],
+    queryFn: () => fetchRewardConfig(conditionId as string),
+    enabled: !!conditionId,
+    staleTime: 10 * 60 * 1000,
+    retry: 1,
+  })
+
+  useEffect(() => {
+    if (q.error) console.warn('[rewards] 挂单奖励配置读取失败，不显示预估：', q.error)
+  }, [q.error])
+
+  return q.data ?? null
 }
 
 // ── 下单 ────────────────────────────────────────────────

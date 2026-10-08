@@ -29,6 +29,7 @@ import { Suspense, lazy, useCallback, useEffect, useMemo, useState } from 'react
 import { useQuery } from '@tanstack/react-query'
 import { fetchMarketEventIds } from './lib/gamma'
 import { parseMarketLink } from './lib/market-link'
+import { isPageReload } from './lib/page-load'
 import { WalletMenu } from './components/connect-wallet'
 import { MarketGraphCanvas } from './components/market-graph-canvas'
 import { MatchPicker } from './components/match-picker'
@@ -81,19 +82,29 @@ const TestGraph = lazy(() => import('./pages/test-graph').then((m) => ({ default
  */
 const OrdersPage = lazy(() => import('./pages/orders'))
 
-/** 当前 hash 路由。没上 react-router —— 只有两个页面，装路由库不值得 */
-function useHash(): string {
+/**
+ * 当前 hash 路由。没上 react-router —— 只有两个页面，装路由库不值得。
+ *
+ * 除了 hash 还返回 `jumped`：这次渲染的 hash 是不是**用户刚跳过来的**。
+ * 首屏那一下要看这次加载是刷新还是打开（见 lib/page-load），之后的每一次
+ * hashchange 都是用户自己点的链接，一律算跳转。
+ */
+function useHash(): { hash: string; jumped: boolean } {
   const [hash, setHash] = useState(() => window.location.hash)
+  const [jumped, setJumped] = useState(() => !isPageReload())
   useEffect(() => {
-    const on = () => setHash(window.location.hash)
+    const on = () => {
+      setHash(window.location.hash)
+      setJumped(true)
+    }
     window.addEventListener('hashchange', on)
     return () => window.removeEventListener('hashchange', on)
   }, [])
-  return hash
+  return { hash, jumped }
 }
 
 export default function App() {
-  const hash = useHash()
+  const { hash, jumped } = useHash()
   // 在根上订阅：切换语言时整棵树重渲染（组件都没包 memo）
   useLang()
 
@@ -139,10 +150,14 @@ export default function App() {
     )
   }
 
-  return <GraphPage key={hash} target={parseMarketLink(hash)} />
+  return <GraphPage key={hash} target={parseMarketLink(hash)} openOrder={jumped} />
 }
 
-function GraphPage({ target }: { target: ReturnType<typeof parseMarketLink> }) {
+/**
+ * @param openOrder 落到深链那个盘口时，要不要**顺手把下单面板打开**。
+ *   点进来的要（那正是深链的意义），刷新出来的不要 —— 见 lib/page-load。
+ */
+function GraphPage({ target, openOrder }: { target: ReturnType<typeof parseMarketLink>; openOrder: boolean }) {
   const lang = useLang()
   const { matches, loading, error, network, reload } = useSoccerMatches()
   /**
@@ -255,9 +270,12 @@ function GraphPage({ target }: { target: ReturnType<typeof parseMarketLink> }) {
     setSelectedKey(targetSlot.key)
     setPickedKey(targetSlot.key)
     setPickedSideName(targetNode.sides.find((s) => s.tokenId === target.tokenId)!.name)
-    setOrderOpen(true)
+    // 定位（换到那场比赛、选中那个槽位）永远做；弹面板只在「点进来」那一次做。
+    // 刷新出来的这一屏，地址栏里还挂着同一个深链 —— 面板关掉再刷新又弹出来，
+    // 就是这么来的（见 lib/page-load）。
+    if (openOrder) setOrderOpen(true)
     setTargetHandled(true)
-  }, [target, targetHandled, targetMatch, targetNode, targetSlot])
+  }, [target, targetHandled, targetMatch, targetNode, targetSlot, openOrder])
 
   /**
    * 存的是**槽位的 key，不是槽位对象**。

@@ -26,6 +26,7 @@ import {
 import { feeBreakdown, formatFeeAmount, formatMoney, settleOf, type MarketFee } from '../lib/fee'
 import type { OrderKind, OrderSideName } from '../lib/clob-client'
 import { tr } from '../lib/i18n'
+import { estimateReward, type RewardConfig, type RewardEstimate, type RewardLevel } from '../lib/rewards'
 
 /** 与原项目同值。真正的下限还受 CLOB 的 minOrderSize 约束，由调用方传进来 */
 const MIN_SHARES = 5
@@ -61,6 +62,10 @@ interface Props {
   feeBps: number
   /** 当前盘口的 Polymarket 费率，与本平台 builder 费率分开。 */
   polymarketFee: MarketFee
+  /** 本盘口的挂单奖励配置。null = 没有奖池或查不到，不显示那一块 */
+  rewardConfig?: RewardConfig | null
+  /** 估算奖励要用整本盘口（不止顶档） */
+  bookLevels?: { bids: readonly RewardLevel[]; asks: readonly RewardLevel[] } | null
   /** 最小下单份额。CLOB 盘口给了就用它的，没给用 5 */
   minShares?: number
   /** 可用余额（USDC）。undefined = 拿不到，此时不做上限校验 */
@@ -81,6 +86,8 @@ export function OrderForm({
   tick,
   feeBps,
   polymarketFee,
+  rewardConfig,
+  bookLevels,
   minShares = MIN_SHARES,
   maxAmount,
   externalPrice,
@@ -205,6 +212,12 @@ export function OrderForm({
             : null
 
   const blocked = !!blockedReason
+
+  // 挂单奖励只对限价挂单有意义；市价单是吃单，不计分
+  const reward: RewardEstimate | null =
+    type === 'limit' && rewardConfig && bookLevels
+      ? estimateReward({ config: rewardConfig, bids: bookLevels.bids, asks: bookLevels.asks, side, price, size })
+      : null
 
   /**
    * ± 按钮。
@@ -412,6 +425,10 @@ export function OrderForm({
         </p>
       )}
 
+      {rewardConfig && type === 'limit' && reward && (
+        <RewardBox config={rewardConfig} est={reward} />
+      )}
+
       {(error || blocked) && (
         <p className="text-[11px] leading-snug text-warning">{blocked || error}</p>
       )}
@@ -432,6 +449,54 @@ export function OrderForm({
           ? tr('提交中…', 'Submitting…')
           : `${buy ? tr('买入', 'Buy') : tr('卖出', 'Sell')} ${outcomeName} · ${formatMoney(settle.usd)}`}
       </button>
+    </div>
+  )
+}
+
+function RewardBox({ config, est }: { config: RewardConfig; est: RewardEstimate }) {
+  const fmtCents = (c: number) => `${Number(c.toFixed(2))}¢`
+  const why =
+    est.kind === 'crossing'
+      ? tr('这个价会直接成交（吃单），不计挂单奖励', 'This price fills immediately (taker); no maker reward')
+      : est.kind === 'size'
+        ? tr(`至少挂 ${config.minSize} 份才计分`, `Needs at least ${config.minSize} shares to score`)
+        : est.kind === 'spread'
+          ? tr(
+              `距中价 ${fmtCents(est.spreadCents)}，超出 ${fmtCents(config.maxSpreadCents)} 的计分范围`,
+              `${fmtCents(est.spreadCents)} from mid, outside the ${fmtCents(config.maxSpreadCents)} scoring range`,
+            )
+          : est.kind === 'extreme'
+            ? tr('中价低于 0.10 或高于 0.90，单边挂单不计分', 'Mid is below 0.10 or above 0.90; one-sided quotes don’t score')
+            : est.kind === 'nomid'
+              ? tr('盘口缺一侧，算不出中价', 'Book is one-sided; no midpoint')
+              : null
+  return (
+    <div className="space-y-1 rounded-md border border-primary/30 bg-primary/5 p-2.5 text-[11px]">
+      <SumRow k={tr('挂单奖励池（每日）', 'Liquidity reward pool (daily)')} v={formatMoney(config.dailyRate)} />
+      <SumRow
+        k={tr('计分条件', 'Scoring')}
+        v={tr(
+          `≥${config.minSize} 份 · 距中价 <${fmtCents(config.maxSpreadCents)}`,
+          `≥${config.minSize} sh · <${fmtCents(config.maxSpreadCents)} from mid`,
+        )}
+      />
+      {est.kind === 'ok' ? (
+        <>
+          <SumRow
+            k={tr(`预估奖励（挂满 24 小时）`, 'Est. reward (if resting 24h)')}
+            v={`${formatFeeAmount(est.dailyUsd)} / ${tr('天', 'day')}`}
+            strong
+          />
+          <p className="text-[10px] leading-snug text-muted-foreground">
+            {tr(
+              `距中价 ${fmtCents(est.spreadCents)}，约占奖池 ${(est.share * 100).toFixed(2)}%。按当前盘口、单边挂单（得分 ÷3）估算，实际以 Polymarket 次日发放为准；不足 $1 不发放。`,
+              `${fmtCents(est.spreadCents)} from mid, ~${(est.share * 100).toFixed(2)}% of the pool. Estimated from the current book as a one-sided quote (score ÷3); actual payout is set by Polymarket the next day, and amounts under $1 aren’t paid.`,
+            )}
+          </p>
+        </>
+      ) : (
+        <p className="text-[10px] leading-snug text-warning">{why}</p>
+      )}
     </div>
   )
 }

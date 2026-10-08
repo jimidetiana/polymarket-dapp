@@ -24,6 +24,7 @@ import {
   useOrderBook,
   usePolymarketFee,
   useProxyWallet,
+  useRewardConfig,
 } from '../lib/use-clob'
 import { explainError, type OpenOrderRow, type PlaceOutcome } from '../lib/clob-client'
 /**
@@ -90,6 +91,7 @@ export function OrderDialog({
   // 「表单显示 0.05%、确认面板显示别的」这种自相矛盾。
   const { feeBps } = useBuilderFeeRates()
   const polymarketFee = usePolymarketFee(conditionId)
+  const rewardConfig = useRewardConfig(conditionId)
   /**
    * 本盘口的持仓与成交。走公开 REST，**免鉴权、不弹签名**，所以打开弹窗就能自动加载 ——
    * 与下面的挂单不同，那个必须先建已认证客户端。
@@ -709,6 +711,8 @@ export function OrderDialog({
                   tick={tick}
                   feeBps={feeBps}
                   polymarketFee={polymarketFee}
+                  rewardConfig={rewardConfig}
+                  bookLevels={depth.book ? { bids: depth.book.bids, asks: depth.book.asks } : null}
                   minShares={minShares}
                   maxAmount={balance}
                   externalPrice={picked}
