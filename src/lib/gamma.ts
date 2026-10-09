@@ -490,6 +490,12 @@ export type PositionMarketInfo = {
   line: number | null
   /** 该盘口的结果集，如 ["Yes","No"] / ["Over","Under"] / [队A,队B] */
   outcomes: string[]
+  /**
+   * 开赛时刻（毫秒）。取自赛事 event.endDate —— 本项目一贯把它当开哨时间用
+   * （见 use-graph 的 matchMinute(match.endDate)）。拿不到 / 不是时间就 null。
+   * 「我的订单」页按它给持仓排序（快开赛的在最上）。
+   */
+  startMs: number | null
 }
 
 /**
@@ -505,6 +511,9 @@ export function buildPositionMarketIndex(events: readonly GammaEvent[]): Map<str
     const title = e.title ?? ''
     const match = baseTitle(title)
     const suffix = title.slice(match.length).replace(/^\s*[-–—]\s*/, '').trim()
+    // 开赛时刻按本项目口径取 event.endDate（见 PositionMarketInfo.startMs）
+    const parsed = e.endDate ? Date.parse(e.endDate) : NaN
+    const startMs = Number.isFinite(parsed) ? parsed : null
     for (const m of e.markets ?? []) {
       const tokens = parseJsonArray<string>(m.clobTokenIds)
       if (tokens.length === 0) continue
@@ -515,6 +524,7 @@ export function buildPositionMarketIndex(events: readonly GammaEvent[]): Map<str
         groupItemTitle: m.groupItemTitle ?? '',
         line: m.line == null ? null : Number(m.line),
         outcomes: parseJsonArray<string>(m.outcomes),
+        startMs,
       }
       for (const t of tokens) if (t) idx.set(String(t), info)
     }

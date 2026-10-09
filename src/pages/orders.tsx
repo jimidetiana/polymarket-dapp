@@ -44,9 +44,10 @@ export default function OrdersPage() {
    * 里（有测试钉着）：`redeemable` 或份额已清零算完结。**判据不在这里自己写** —— 那个
    * 「份额清零」不能用 `> 0`，实测卖光后会留 1e-9 这种浮点残渣。
    *
-   * 持仓按市值从大到小排；汇总的已实现盈亏跨**全部**行取和（持仓也可能有已实现的部分）。
+   * 这里先按市值从大到小排一遍当基准；最终展示顺序在下面按「开赛时间」重排（见 held）。
+   * 汇总的已实现盈亏跨**全部**行取和（持仓也可能有已实现的部分）。
    */
-  const { held, settled, value, unrealized, realized } = useMemo(() => {
+  const { heldByValue, settled, value, unrealized, realized } = useMemo(() => {
     const open: PolyPosition[] = []
     const done: PolyPosition[] = []
     let value = 0
@@ -63,8 +64,34 @@ export default function OrdersPage() {
       }
     }
     open.sort((a, b) => b.currentValue - a.currentValue)
-    return { held: open, settled: done, value, unrealized, realized }
+    return { heldByValue: open, settled: done, value, unrealized, realized }
   }, [orders.positions])
+
+  /**
+   * tokenId → 盘口信息（比赛「A vs B」/ 玩法 / 结果标签 / 开赛时刻）。持仓数据本身拿不到
+   * 「谁对谁」，也没有开赛时间，从 Gamma 按持仓所属赛事 id 拉回来补上（见 usePositionMarketIndex）。
+   */
+  const eventIds = useMemo(() => {
+    const s = new Set<string>()
+    for (const p of orders.positions) if (p.eventId) s.add(String(p.eventId))
+    return s
+  }, [orders.positions])
+  const marketIndex = usePositionMarketIndex(eventIds)
+
+  /**
+   * 持仓的最终展示顺序：按**开赛时刻**升序，快开赛的排最上（用户指定）。开赛时间从
+   * marketIndex 查（源自 Gamma event.endDate）；查不到时刻的沉到底（Infinity），同一时刻
+   * 的按市值从大到小兜底。JS 的 sort 在现代引擎里稳定，拿不到时间的会保持上面按市值排好的次序。
+   */
+  const held = useMemo(() => {
+    const startOf = (p: PolyPosition) => marketIndex.get(p.asset)?.startMs ?? Infinity
+    return [...heldByValue].sort((a, b) => {
+      const ta = startOf(a)
+      const tb = startOf(b)
+      if (ta !== tb) return ta - tb
+      return b.currentValue - a.currentValue
+    })
+  }, [heldByValue, marketIndex])
 
   /**
    * 导出用的勾选集，作用在**持仓**上（导出的是持仓情况，不是成交流水）。默认首批持仓到手时
@@ -116,17 +143,6 @@ export default function OrdersPage() {
     for (const [asset, ts] of any) out.set(asset, buy.get(asset) ?? ts)
     return out
   }, [orders.trades])
-
-  /**
-   * tokenId → 盘口信息（比赛「A vs B」/ 玩法 / 结果标签）。持仓数据本身拿不到「谁对谁」，
-   * 从 Gamma 按持仓所属赛事 id 拉回来补上（见 usePositionMarketIndex）。
-   */
-  const eventIds = useMemo(() => {
-    const s = new Set<string>()
-    for (const p of orders.positions) if (p.eventId) s.add(String(p.eventId))
-    return s
-  }, [orders.positions])
-  const marketIndex = usePositionMarketIndex(eventIds)
 
   /**
    * 一个持仓 → 一行导出数据。优先用 Gamma 索引把比赛、盘口玩法、选择摆清楚；索引里没有
