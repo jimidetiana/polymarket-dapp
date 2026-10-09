@@ -9,6 +9,7 @@
     "build": "tsc -b && vite build",
     "test": "vitest run",
     "lint": "oxlint",
+    "icons": "node scripts/icons/generate-icons.mjs",
     "preview": "npm run build && wrangler dev",
     "deploy": "npm run build && wrangler deploy",
     "discord": "node --env-file-if-exists=.env scripts/discord/sync.mjs",

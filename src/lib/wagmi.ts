@@ -2,12 +2,13 @@ import { http, createConfig } from 'wagmi'
 import { polygon } from 'wagmi/chains'
 import { injected } from 'wagmi/connectors/injected'
 import { walletConnect } from 'wagmi/connectors/walletConnect'
+import { siteOrigin } from './site'
 import { withAndroidWalletLaunch } from './wallet-launch-connector'
 
 const projectId = import.meta.env.VITE_WALLETCONNECT_PROJECT_ID?.trim()
-const origin = typeof window === 'undefined'
-  ? 'https://polysoccer.zhangsanfengzhsh.workers.dev'
-  : window.location.origin
+// WalletConnect 的 metadata.url / redirect 必须是绝对地址：浏览器里就是当前 origin，
+// 非浏览器环境回落到 lib/site.ts 的 SITE_URL。换域名只改那一处。
+const origin = siteOrigin()
 const isAndroidPwa = typeof window !== 'undefined'
   && typeof navigator !== 'undefined'
   && /Android/i.test(navigator.userAgent)

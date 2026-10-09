@@ -16,14 +16,15 @@
  * （首行：盘口 + 花费；次行：选择药丸 · 均价·欧赔 · 份额 · 时间），信息不丢，只是换行。
  */
 import { tr } from '../lib/i18n'
+import { siteDisplayUrl } from '../lib/site'
 import { cn } from '../lib/utils'
 import { euroOdds, groupByMatch, pct, positionTimeText, type ExportRow } from '../lib/orders-export'
 
 /** 一行持仓 + 它在勾选集里的键（与页面的 posKey 同源） */
 export type BoardRow = { key: string; row: ExportRow; href: string }
 
-/** 门户网址，印在页脚水印处（与导出图片一致，见 memory 的 frontend-deploy-state） */
-const SITE_URL = 'https://polysoccer.zhangsanfengzhsh.workers.dev/'
+/** 门户网址，印在页脚水印处（与导出图片一致）。换域名只改 lib/site.ts 一处 */
+const SITE_URL = siteDisplayUrl()
 
 /**
  * 桌面表格列宽，与导出图片同比例（盘口 168 / 选择 200 / 时间 130 / 均价·欧赔 138 /
@@ -84,7 +85,7 @@ export function PositionsBoard({
       {/* 品牌渐变头 */}
       <div className="flex items-start justify-between gap-3 bg-gradient-to-r from-[#007aff] to-[#0a5bd0] px-5 py-4 text-white">
         <div className="min-w-0">
-          <p className="text-lg font-bold leading-tight">polysoccer</p>
+          <p className="text-lg font-bold leading-tight">PolySoccer</p>
           <p className="text-[11px] font-medium text-white/80">{tr('足球盘口交易门户', 'Soccer markets portal')}</p>
         </div>
         <div className="shrink-0 text-right">

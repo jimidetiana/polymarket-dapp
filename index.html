@@ -4,7 +4,17 @@
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-    <title>polysoccer</title>
+    <title>PolySoccer</title>
+    <!-- 站点自述：钱包（MetaMask 等）的钓鱼拦截会**读页面上的这段文本**来判断
+         「这站是不是在冒充别人」，所以它必须真实、可核实，并明确否认隶属关系 ——
+         这是申诉时唯一能被机器读到的身份信号，比页脚里写什么都重要。
+         换域名时同步改下面的 canonical（正文常量在 src/lib/site.ts）。 -->
+    <meta
+      name="description"
+      content="PolySoccer — 独立的 Polymarket 足球预测市场第三方前端，非 Polymarket 官方产品、无隶属关系，不托管用户资金。"
+    />
+    <link rel="canonical" href="https://polysoccer.zhangsanfengzhsh.workers.dev/" />
+    <meta name="robots" content="index, follow" />
 
     <!-- PWA：manifest 与注册脚本由 vite-plugin-pwa 在 build 时注入，
          下面这些是它不管、但 iOS「添加到主屏」需要的补充标签。 -->
@@ -18,6 +28,32 @@
   </head>
   <body>
     <div id="root"></div>
+    <!-- 加载兜底：JS 与样式表都没到之前，页面上至少有一句人话。
+         正常使用看不到它 —— main.tsx 挂载时整个 #root 之外的节点不参与渲染，
+         但它是**静态 HTML**，所以爬虫、钱包的页面检测、人工复核都能读到。
+
+         之前这里是空白，一个只有 <div id="root"></div> 的钱包站，在文本层面
+         和钓鱼站无法区分 —— 这是被拦的常见原因之一，和域名无关。
+         文案口径与 src/pages/legal.tsx 保持一致，改一处要同步另一处。 -->
+    <div
+      id="static-fallback"
+      style="max-width:42rem;margin:6rem auto 0;padding:0 1.25rem;font:14px/1.7 -apple-system,'PingFang SC','Microsoft YaHei',system-ui,sans-serif;color:#1d1d1f"
+    >
+      <h1 style="font-size:18px;margin:0 0 .5rem">PolySoccer</h1>
+      <p style="margin:0 0 .5rem">
+        独立的 Polymarket 足球预测市场第三方前端。本站不是 Polymarket 官方产品，
+        与该平台不存在隶属、代理或背书关系，也不使用其商标与视觉资产。
+      </p>
+      <p style="margin:0 0 .5rem">
+        本站不持有用户私钥、不代管资金；所有交易均由用户在钱包中亲自确认后，
+        由 Polymarket 的合约执行。预测市场交易存在本金全部损失的风险。
+        本服务不向受限制地区的用户提供。
+      </p>
+      <p style="margin:0">
+        隐私政策、服务条款与免责声明见 <a href="#/legal">法律与免责</a>。
+        正在加载应用…若长时间无响应，请确认浏览器已启用 JavaScript。
+      </p>
+    </div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

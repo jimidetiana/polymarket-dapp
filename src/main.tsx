@@ -18,6 +18,15 @@ const queryClient = new QueryClient({
   },
 })
 
+/**
+ * 摘掉 index.html 里的静态兜底文案。
+ *
+ * 那段文本是给爬虫 / 钱包页面检测 / 人工复核读的**静态 HTML**（见 index.html 注释），
+ * 一旦 React 挂载成功它就没有存在意义了 —— 留着会在页面上和真实界面重复一份。
+ * 它不在 #root 里，React 不会自动接管，所以手动删。
+ */
+document.getElementById('static-fallback')?.remove()
+
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <WagmiProvider config={wagmiConfig}>

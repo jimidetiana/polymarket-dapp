@@ -83,6 +83,19 @@ const TestGraph = lazy(() => import('./pages/test-graph').then((m) => ({ default
 const OrdersPage = lazy(() => import('./pages/orders'))
 
 /**
+ * 隐私政策 / 服务条款 / 免责声明。
+ *
+ * 这三页是**给审核方看的**，不是给用户看的 —— 钱包（MetaMask 等）判定
+ * dApp 是否为钓鱼站时，域名之外看的就是「这站有没有可核实的真实身份」。
+ * 没有主体、没有联系方式、没有条款的链上交易站点，和钓鱼站的机器特征
+ * 无法区分，这是被拦的常见原因（见 lib/site.ts 顶部说明）。
+ *
+ * 所以它走 lazy 但不做 DEV 门：线上必须可达。深度链接 `#/legal` 可直接
+ * 发给审核方，也可以在申诉材料里引用。
+ */
+const LegalPage = lazy(() => import('./pages/legal'))
+
+/**
  * 当前 hash 路由。没上 react-router —— 只有两个页面，装路由库不值得。
  *
  * 除了 hash 还返回 `jumped`：这次渲染的 hash 是不是**用户刚跳过来的**。
@@ -146,6 +159,20 @@ export default function App() {
         }
       >
         <OrdersPage />
+      </Suspense>
+    )
+  }
+
+  if (hash === '#/legal') {
+    return (
+      <Suspense
+        fallback={
+          <div className="flex h-dvh items-center justify-center bg-background text-sm text-muted-foreground">
+            {tr('加载中…', 'Loading…')}
+          </div>
+        }
+      >
+        <LegalPage />
       </Suspense>
     )
   }
@@ -340,7 +367,7 @@ function GraphPage({ target, openOrder }: { target: ReturnType<typeof parseMarke
           {/* 品牌字标：字号比正文大一档，用品牌蓝而不是前景黑，
               和按钮/选中态同一个强调色，全站只有一个强调色。
               窄屏截断而不是换行：顶栏高度要固定，否则画布高度跟着抖 */}
-          <h1 className="truncate text-lg font-semibold tracking-tight text-primary">polysoccer</h1>
+          <h1 className="truncate text-lg font-semibold tracking-tight text-primary">PolySoccer</h1>
         </div>
 
         <div className="flex min-w-0 items-center gap-2">
@@ -360,6 +387,16 @@ function GraphPage({ target, openOrder }: { target: ReturnType<typeof parseMarke
           >
             {lang === 'en' ? '中文' : 'EN'}
           </button>
+
+          {/* 法律页入口。**常驻线上**（不像下面的开发期「词典」那样被 DEV 门摇掉）——
+              主体信息、条款、免责声明必须是可达的：钱包与审核方会顺着找，
+              找不到就是「身份不可核实」的信号。 */}
+          <a
+            href="#/legal"
+            className="rounded-md border border-border px-2 py-1 text-[11px] text-foreground/80 hover:bg-muted"
+          >
+            {tr('条款', 'Legal')}
+          </a>
 
           {/* 词典入口只在开发时出现。与上面的 lazy 用同一个编译期常量，
               生产构建里这个 && 分支整体被摇掉，不会留下一个点不开的链接。 */}
@@ -426,7 +463,7 @@ function GraphPage({ target, openOrder }: { target: ReturnType<typeof parseMarke
         >
           {/* 抽屉盖住了顶栏的品牌，这里补一个，顺带放个关闭按钮 */}
           <div className="flex items-center justify-between gap-2 border-b border-border px-3 py-2 lg:hidden">
-            <span className="text-base font-semibold tracking-tight text-primary">polysoccer</span>
+            <span className="text-base font-semibold tracking-tight text-primary">PolySoccer</span>
             <button
               type="button"
               onClick={() => setNavOpen(false)}
@@ -504,6 +541,8 @@ function GraphPage({ target, openOrder }: { target: ReturnType<typeof parseMarke
               priceMode={priceMode}
               // 口径开关画在画布右上角（挨着它作用的那些数字），状态仍在这层
               onTogglePriceMode={() => setPriceMode(priceMode === 'prob' ? 'odds' : 'prob')}
+              // 「导出盘口」把子赛事 id 记进文件 —— 盘口是按它们拉的，记下来才能回查
+              eventIds={match?.eventIds}
               prevPrices={prevPrices}
               selectedKey={selectedKey}
               onSelect={setSelectedKey}

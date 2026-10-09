@@ -23,6 +23,7 @@
  * **最后一笔买入**的成交时间，由调用方从成交明细算好传进来（meta.timeByAsset）。
  */
 import { tr, zonedTimeParts } from './i18n'
+import { siteDisplayUrl } from './site'
 
 /**
  * 一条已**本地化好**的持仓行（比赛 / 盘口 / 选择都由调用方按当前语言译好传进来）。
@@ -65,8 +66,8 @@ const FONT_SANS =
   '-apple-system, "PingFang SC", "Microsoft YaHei", system-ui, "Segoe UI", Roboto, sans-serif'
 const FONT_MONO = '"SF Mono", "JetBrains Mono", "Fira Code", ui-monospace, monospace'
 
-/** 门户网址，印在页脚水印处（见 memory 的 frontend-deploy-state） */
-const SITE_URL = 'https://polysoccer.zhangsanfengzhsh.workers.dev/'
+/** 门户网址，印在页脚水印处。换域名只改 lib/site.ts 一处 */
+const SITE_URL = siteDisplayUrl()
 
 /** 配色与 index.css 的 Apple 令牌一致 */
 const C = {
@@ -261,7 +262,7 @@ export async function exportPositionsImage(
 
   ctx.fillStyle = C.onBrand
   ctx.font = `700 21px ${FONT_SANS}`
-  ctx.fillText('polysoccer', x0, top + 34)
+  ctx.fillText('PolySoccer', x0, top + 34)
   ctx.fillStyle = C.onBrandDim
   ctx.font = `500 11px ${FONT_SANS}`
   ctx.fillText(tr('足球盘口交易门户', 'Soccer markets portal'), x0, top + 54)

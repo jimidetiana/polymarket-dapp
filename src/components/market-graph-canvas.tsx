@@ -44,6 +44,7 @@ import { formatPrice, priceModeLabel, type PriceMode } from '@/lib/odds'
 import { tr, useLang } from '@/lib/i18n'
 import { PALETTES, DEFAULT_PALETTE, type TeamPaletteKey } from '@/lib/palette'
 import { positionKind, slotPositionMark, type PositionIndex, type SlotPositionMark } from '@/lib/positions'
+import { ExportBookButton } from './export-book-button'
 import type { GraphGoalCounts, GraphNode, GraphSlot, MarketGraph } from '@/types/market-graph'
 import { BASE_R, layoutSlots, type Pt } from '@/lib/layout'
 import { isOuterSlot } from '@/graph/template'
@@ -137,6 +138,13 @@ interface Props {
    * test-graph 那种自带开关的调用方不传，按钮就不出现。
    */
   onTogglePriceMode?: () => void
+  /**
+   * 组成这场比赛的全部子赛事 id（match.eventIds）。只给「导出盘口」记进文件用 ——
+   * 盘口是按它们拉的（见 lib/gamma.mergeIntoMatches），记下来才能按文件回查。
+   *
+   * 不传也能导出，那时文件里只有主赛事 id。
+   */
+  eventIds?: readonly string[]
   /** 上一轮价格，key = slot.key */
   prevPrices: Record<string, number>
   selectedKey: string | null
@@ -255,6 +263,7 @@ export function MarketGraphCanvas({
   goals,
   priceMode,
   onTogglePriceMode,
+  eventIds,
   prevPrices,
   selectedKey,
   onSelect,
@@ -283,6 +292,19 @@ export function MarketGraphCanvas({
     () => expanded ? slots : slots.filter((s) => !isOuterSlot(s)),
     [slots, expanded],
   )
+
+  /**
+   * 此刻画在图上的那些**盘口**（去重后的节点 id），给「导出盘口」用。
+   *
+   * 从 visibleSlots 收而不是从 graph.nodes：导出要跟着「展示更多 / 折叠盘口」走。
+   * 必须去重 —— 让球盘的两侧各占一个槽位（主队 -1.5 ↔ 客队 +1.5）却是**同一个节点**，
+   * 不去重会把那张盘导两遍。空槽（这场比赛没挂这条线）的 nodeId 是 null，跳过。
+   */
+  const visibleNodeIds = useMemo(() => {
+    const set = new Set<string>()
+    for (const s of visibleSlots) if (s.nodeId) set.add(s.nodeId)
+    return set
+  }, [visibleSlots])
 
   // 图例用的队名：有中文用中文，否则回退英文。类型保证是 string，可能为空串。
   const homeTeam = graph.homeTeamZh || graph.homeTeamEn
@@ -1055,6 +1077,11 @@ export function MarketGraphCanvas({
             {priceModeLabel(priceMode)}
           </button>
         )}
+        {/*
+          导出图上此刻显示的那些盘口 + 每侧前 3 档挂单。摆在这里是因为它导的就是
+          这张图上的东西 —— 包括「展示更多 / 折叠盘口」此刻露出了哪些（见 visibleNodeIds）。
+        */}
+        <ExportBookButton graph={graph} nodeIds={visibleNodeIds} eventIds={eventIds} />
         <button
           type="button"
           aria-expanded={expanded}

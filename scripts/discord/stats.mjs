@@ -287,6 +287,33 @@ function capitalStats(activity) {
   return { turnover, peakDeployed: peak, net: cum };
 }
 
+// 每周收益：从第一笔建仓那天（北京时间 0 点）起算，每 7 天一期。
+// 每期收益 = 该期建仓的盘口已了结的净现金流（赎回 + 卖出 − 买入）之和，和「净现金流」同口径。
+// 还没结算的仓位不计——否则买入成本会被当成当周亏损。
+const WEEK = 7 * 86400;
+const CST = 8 * 3600;
+const dayStart = (sec) => Math.floor((sec + CST) / 86400) * 86400 - CST;
+const DAY_FMT = new Intl.DateTimeFormat('zh-CN', { timeZone: 'Asia/Shanghai', month: '2-digit', day: '2-digit' });
+const fmtDay = (sec) => DAY_FMT.format(new Date(sec * 1000)).replace(/\//g, '-');
+
+function weeklyStats(records) {
+  const rows = records.filter((r) => r.bucket !== 'open' && r.firstT > 0);
+  if (!rows.length) return [];
+  const t0 = dayStart(Math.min(...rows.map((r) => r.firstT)));
+  const weeks = new Map();
+  for (const r of rows) {
+    const i = Math.floor((r.firstT - t0) / WEEK);
+    const w = weeks.get(i) || { i, n: 0, wins: 0, losses: 0, profit: 0 };
+    w.n++; w.profit += r.profit;
+    if (r.status === 'win') w.wins++; else if (r.status === 'loss') w.losses++;
+    weeks.set(i, w);
+  }
+  const cur = Math.floor((Math.floor(Date.now() / 1000) - t0) / WEEK);
+  return [...weeks.values()]
+    .sort((a, b) => b.i - a.i) // 最近一期在上，和明细一致
+    .map((w) => ({ ...w, start: t0 + w.i * WEEK, end: t0 + (w.i + 1) * WEEK - 1, current: w.i === cur }));
+}
+
 function summarize(records) {
   const counted = records.filter((r) => r.bucket === 'counted');
   const shown = records.filter((r) => r.bucket === 'shown');
@@ -303,7 +330,7 @@ function summarize(records) {
   counted.sort(byTimeDesc);
   shown.sort(byTimeDesc);
   open.sort(byTimeDesc);
-  return { counted, shown, open, wins, losses, actualRate, expWins, expectedRate };
+  return { counted, shown, open, wins, losses, actualRate, expWins, expectedRate, weeks: weeklyStats(records) };
 }
 
 // ── 渲染 ────────────────────────────────────────────────
@@ -322,6 +349,24 @@ function detailRow(r, counted) {
   let line = `${mark} ${cols.join(' · ')}`;
   if (!counted) line += `（${r.reason === 'longshot' ? `低赔${pct(r.entryProb)}` : '赛前平仓'}）`;
   return line;
+}
+
+// 每周收益块。场次只增不减，最多列最近 12 期，更早的折成一行。
+const WEEK_KEEP = 12;
+function weeklyBlock(weeks) {
+  if (!weeks.length) return null;
+  const rows = weeks.slice(0, WEEK_KEEP).map((w) => {
+    const no = `第${w.i + 1}周`;
+    const span = `${fmtDay(w.start)}~${fmtDay(w.end)}`;
+    const wl = `${w.n}场 ${w.wins}胜${w.losses}负`;
+    return `${no} · ${span} · ${wl} · ${sUsd(w.profit)}${w.current ? '（进行中）' : ''}`;
+  });
+  const rest = weeks.slice(WEEK_KEEP);
+  if (rest.length) {
+    const sum = rest.reduce((a, w) => a + w.profit, 0);
+    rows.push(`更早 ${rest.length} 期合计 ${sUsd(sum)}`);
+  }
+  return { title: '__每周收益（每 7 天一期 · 按建仓时间归期）__', rows };
 }
 
 // 三部分文本块。asset 传 { cash, posValue, principal, pnl, roi, cashOk }。
@@ -349,7 +394,7 @@ function renderBlocks(s, asset) {
       rows: s.shown.map((r) => detailRow(r, false)),
     }
     : null;
-  return { head: head.join('\n'), counted, shown };
+  return { head: head.join('\n'), weekly: weeklyBlock(s.weeks), counted, shown };
 }
 
 // 场次只会越来越多，总有一天装不下：Discord 单条 embed 描述上限 4096，整条消息
@@ -414,9 +459,10 @@ function buildEmbeds(blocks, wallet) {
   // 先尽量全列，超了就一行一行砍：先砍「不计入」，砍完还超再砍「计入」（战绩本体最后动）。
   let keepShown = blocks.shown ? blocks.shown.rows.length : 0;
   let keepCounted = blocks.counted.rows.length;
+  const weekly = blocks.weekly ? `${fullBlock(blocks.weekly)}\n\n` : '';
   let desc1, desc2;
   for (;;) {
-    desc1 = `${blocks.head}\n\n${fitBlock(blocks.counted, keepCounted)}`;
+    desc1 = `${blocks.head}\n\n${weekly}${fitBlock(blocks.counted, keepCounted)}`;
     desc2 = blocks.shown ? fitBlock(blocks.shown, keepShown) : '';
     const over = desc1.length + desc2.length + overhead > MSG_BUDGET;
     if (!over && desc1.length <= DESC_LIMIT && desc2.length <= DESC_LIMIT) break;
@@ -462,7 +508,7 @@ async function main() {
 
   if (DRY) {
     // dry 打全量（不裁），方便逐场核对。
-    console.log([blocks.head, '', fullBlock(blocks.counted), '', fullBlock(blocks.shown)].join('\n'));
+    console.log([blocks.head, '', fullBlock(blocks.weekly), '', fullBlock(blocks.counted), '', fullBlock(blocks.shown)].join('\n'));
     console.log(`\n(参考) 现金 ${cashOk ? usd(cash) : '读取失败'} · 持仓市值 ${usd(posValue)} · 流水(累计买入) ${usd(cap.turnover)} · 峰值自有资金投入 ${usd(cap.peakDeployed)} · 净现金流 ${sUsd(cap.net)}`);
     console.log(`(dry) 钱包 ${wallet}，未发 Discord。`);
     return;

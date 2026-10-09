@@ -536,6 +536,13 @@ export function WalletPanel() {
  * 猜一个看起来合理的深链，猜错了就是 404 —— 那比让人多点一次导航还糟，
  * 而且坏掉的时候没人会发现（只有真去点才会暴露）。根地址永远能用。
  *
+ * ## 为什么要带 `target="_blank"` 和 title
+ *
+ * 这些链接会把人送**离开本站**去一个第三方的资金操作页面。对用户是防误触
+ * （新标签页打开，本站还在）；对钱包的风控也是：本站从不索取助记词/私钥，
+ * 也从不把用户引向「非官方」的存款入口 —— title 里写明是外部官方站点，
+ * 机器和人都能读到这一点。
+ *
  * ## 为什么要 variant，而不是让调用点传 className 覆盖
  *
  * `lib/utils.ts` 的 `cn` 只是把字符串拼起来，**不做同类冲突仲裁**（没装
@@ -566,6 +573,7 @@ function PolymarketLink({
       href="https://polymarket.com"
       target="_blank"
       rel="noreferrer"
+      title={tr('前往 Polymarket 官方网站（第三方，将在新标签页打开）', 'Go to the official Polymarket site (third party, opens in a new tab)')}
       className={cn(LINK_VARIANTS[variant], className)}
     >
       {children}
