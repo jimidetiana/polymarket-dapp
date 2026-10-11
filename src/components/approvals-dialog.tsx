@@ -28,6 +28,7 @@ import { createPortal } from 'react-dom'
 import { useWalletBalances } from '../lib/use-wallet'
 import { useApprovalState, useSetupApprovals } from '../lib/use-clob'
 import { tr } from '../lib/i18n'
+import { Spinner } from './spinner'
 
 interface Props {
   onClose: () => void
@@ -111,7 +112,14 @@ export function ApprovalsDialog({ onClose }: Props) {
                 onClick={() => void setup.run()}
                 className="w-full rounded-md bg-primary px-3 py-2 text-sm font-semibold text-primary-foreground transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:bg-muted disabled:text-muted-foreground"
               >
-                {running ? tr('授权中…', 'Approving…') : tr('一键授权（免 gas）', 'Approve all (gasless)')}
+                {running ? (
+                  <span className="inline-flex items-center justify-center gap-1.5">
+                    <Spinner className="size-4" />
+                    {tr('授权中…', 'Approving…')}
+                  </span>
+                ) : (
+                  tr('一键授权（免 gas）', 'Approve all (gasless)')
+                )}
               </button>
             )}
 

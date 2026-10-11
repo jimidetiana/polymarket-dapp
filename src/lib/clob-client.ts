@@ -25,6 +25,7 @@ import { createPublicClient as createViemPublicClient, erc1155Abi, erc20Abi, htt
 import { polygon } from 'viem/chains'
 import { builderCode } from './builder'
 import { tr } from './i18n'
+import { beginWalletWait } from './wallet-activity'
 import { resolveSigningUrl, resetSigningUrl } from './polymarket-config'
 import { PUSD_POLYGON } from './proxy-wallet'
 import type { MarketFee } from './fee'
@@ -186,7 +187,7 @@ export function getReadClient(req: SecureClientRequest): Promise<SecureClient> {
   const p = getSecureClient(req)
     .then((main) =>
       createSecureClient({
-        signer: signerFrom(req.walletClient),
+        signer: instrumentSigner(signerFrom(req.walletClient)),
         credentials: main.credentials,
         wallet: main.account.wallet,
       }),
@@ -199,8 +200,35 @@ export function getReadClient(req: SecureClientRequest): Promise<SecureClient> {
   return p
 }
 
+type ViemSigner = ReturnType<typeof signerFrom>
+
+/**
+ * 给签名器每个「会唤起钱包」的方法套一层「正在等待」信号（lib/wallet-activity）——
+ * 不管 SDK 内部是哪一步（派生 L2 凭据、补授权、下单）调到它，主包里的等待浮层都能亮起。
+ *
+ * 为什么包签名器、而不是去猜哪一步要签名：首单签几次由 SDK 按账户当前状态决定（Deposit
+ * Wallet 部署没有、授权齐不齐），在这边列举「哪几步会弹」必然漏一处。包住签名器这**唯一
+ * 出口**，无论签几次、为什么签，浮层都对得上。`finally` 收尾 —— 签名被拒也会把浮层收掉。
+ */
+function instrumentSigner(signer: ViemSigner): ViemSigner {
+  const withWait = async <T>(fn: () => Promise<T>): Promise<T> => {
+    const end = beginWalletWait('sign')
+    try {
+      return await fn()
+    } finally {
+      end()
+    }
+  }
+  return {
+    ...signer,
+    signTypedData: (payload) => withWait(() => signer.signTypedData(payload)),
+    signMessage: (message) => withWait(() => signer.signMessage(message)),
+    sendTransaction: (request) => withWait(() => signer.sendTransaction(request)),
+  }
+}
+
 async function createClient({ eoa, walletClient }: SecureClientRequest): Promise<SecureClient> {
-  const signer = signerFrom(walletClient)
+  const signer = instrumentSigner(signerFrom(walletClient))
   // 不传 wallet → SDK 用签名者的确定性 Deposit Wallet（POLY_1271）当账户/funder。
   // apiKey: remoteBuilderSigning 打开 supportsGasless —— SDK 就能**免 gas 部署 Deposit
   // Wallet、设置 pUSD 授权**（builder 密钥在后端 url，不进前端）。这一步会让用户签一次名

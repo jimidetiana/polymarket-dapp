@@ -27,6 +27,7 @@ import { feeBreakdown, formatFeeAmount, formatMoney, settleOf, type MarketFee } 
 import type { OrderKind, OrderSideName } from '../lib/clob-client'
 import { tr } from '../lib/i18n'
 import { estimateReward, type RewardConfig, type RewardEstimate, type RewardLevel } from '../lib/rewards'
+import { Spinner } from './spinner'
 
 /** 与原项目同值。真正的下限还受 CLOB 的 minOrderSize 约束，由调用方传进来 */
 const MIN_SHARES = 5
@@ -445,9 +446,14 @@ export function OrderForm({
           'disabled:cursor-not-allowed disabled:bg-muted disabled:text-muted-foreground',
         )}
       >
-        {submitting
-          ? tr('提交中…', 'Submitting…')
-          : `${buy ? tr('买入', 'Buy') : tr('卖出', 'Sell')} ${outcomeName} · ${formatMoney(settle.usd)}`}
+        {submitting ? (
+          <span className="inline-flex items-center justify-center gap-1.5">
+            <Spinner className="size-4" />
+            {tr('提交中…', 'Submitting…')}
+          </span>
+        ) : (
+          `${buy ? tr('买入', 'Buy') : tr('卖出', 'Sell')} ${outcomeName} · ${formatMoney(settle.usd)}`
+        )}
       </button>
     </div>
   )

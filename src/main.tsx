@@ -5,6 +5,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { wagmiConfig } from './lib/wagmi'
 import './index.css'
 import App from './App.tsx'
+import { WalletWaitOverlay } from './components/wallet-wait-overlay'
 
 /**
  * wagmi 需要 react-query 做缓存与请求去重。
@@ -32,6 +33,9 @@ createRoot(document.getElementById('root')!).render(
     <WagmiProvider config={wagmiConfig}>
       <QueryClientProvider client={queryClient}>
         <App />
+        {/* 等待钱包的全局浮层：挂在路由之外一份，连接 / 切链 / 下单签名都共用它。
+            放在这里（而不是某个页面里）是因为下单在盘口弹窗、撤单在订单页，两条路径都要它。 */}
+        <WalletWaitOverlay />
       </QueryClientProvider>
     </WagmiProvider>
   </StrictMode>,
