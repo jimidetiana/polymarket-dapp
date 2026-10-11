@@ -25,7 +25,7 @@ import { createPublicClient as createViemPublicClient, erc1155Abi, erc20Abi, htt
 import { polygon } from 'viem/chains'
 import { builderCode } from './builder'
 import { tr } from './i18n'
-import { beginWalletWait } from './wallet-activity'
+import { beginWalletSignature } from './wallet-activity'
 import { resolveSigningUrl, resetSigningUrl } from './polymarket-config'
 import { PUSD_POLYGON } from './proxy-wallet'
 import type { MarketFee } from './fee'
@@ -212,7 +212,7 @@ type ViemSigner = ReturnType<typeof signerFrom>
  */
 function instrumentSigner(signer: ViemSigner): ViemSigner {
   const withWait = async <T>(fn: () => Promise<T>): Promise<T> => {
-    const end = beginWalletWait('sign')
+    const end = beginWalletSignature()
     try {
       return await fn()
     } finally {

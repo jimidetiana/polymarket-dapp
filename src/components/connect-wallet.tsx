@@ -6,8 +6,6 @@ import { formatPol, formatUsd } from '../lib/money'
 import { tr } from '../lib/i18n'
 import { useWalletBalances } from '../lib/use-wallet'
 import { explainConnectError, pickable } from '../lib/wallet-connect'
-import { beginWalletWait } from '../lib/wallet-activity'
-import { Spinner } from './spinner'
 import { cn } from '../lib/utils'
 
 /**
@@ -74,7 +72,7 @@ export function WalletMenu() {
   const { connectors, connect, isPending, error } = useConnect()
   const available = useAvailableConnectors(connectors)
   const { disconnect } = useDisconnect()
-  const { switchChain, isPending: isSwitching } = useSwitchChain()
+  const { switchChain } = useSwitchChain()
   /**
    * 按钮上的那个数。与浮窗里的 WalletPanel 读的是同一组 query（key 相同，
    * react-query 会去重），所以这一处不额外发请求。
@@ -98,18 +96,6 @@ export function WalletMenu() {
     autoSwitchedRef.current = true
     switchChain({ chainId: polygon.id })
   }, [isConnected, chainId, switchChain])
-
-  // 连接 / 切链期间点亮全局等待浮层（lib/wallet-activity）。手机端这两步都要跳去钱包确认，
-  // 中间有几秒空白 —— 浮层把那段空白填上，也挡住重复点（见下方 ConnectError 关于 -32002）。
-  // 返回的收尾函数交给 effect cleanup：isPending 落下或组件卸载时自动收掉。
-  useEffect(() => {
-    if (!isPending) return
-    return beginWalletWait('connect')
-  }, [isPending])
-  useEffect(() => {
-    if (!isSwitching) return
-    return beginWalletWait('switch')
-  }, [isSwitching])
 
   if (!isConnected) {
     return (
@@ -259,10 +245,7 @@ export function WalletPicker({
           aria-expanded={direct ? undefined : open}
           className="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-50"
         >
-          <span className="inline-flex items-center gap-1.5">
-            {isPending && <Spinner className="size-3.5" />}
-            {label}
-          </span>
+          {label}
         </button>
         {direct && wallets.length > 1 && (
           <button

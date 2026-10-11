@@ -1,80 +1,76 @@
 import { useEffect, useState, useSyncExternalStore } from 'react'
 import { createPortal } from 'react-dom'
-import { getWalletWait, subscribeWalletWait, type WalletWaitKind } from '../lib/wallet-activity'
+import { getWalletSigning, subscribeWalletSigning } from '../lib/wallet-activity'
 import { tr, useLang } from '../lib/i18n'
 import { Spinner } from './spinner'
 
 /**
- * 等待钱包的全局浮层。**挂在根上一份**（main.tsx），由 lib/wallet-activity 的全局信号驱动，
- * 不关心是哪条路径触发的 —— 连接、切链、下单签名都共用它。
+ * 「正在等待钱包确认签名」的浮层。挂在 main.tsx 根上一份，由 lib/wallet-activity 的签名信号驱动。
  *
- * ## 它解决的具体问题
+ * ## 只在签名真正悬而未决时出现
  *
- * 手机端每次跳去钱包都有几秒空白、首单还要连签多次，中途回到应用这边却没有任何「还在等你」
- * 的提示。这个浮层在整段等待期间都显示转圈 + 一句「回钱包确认」，把那些空白缝隙填上，
- * 顺便挡住重复点击（见 connect-wallet 里关于 -32002 的注释）。
+ * 不盯连接 / 切网络（那时浏览器自己的选择框、钱包界面会盖住一切，叠浮层既被挡又无意义）——
+ * 只在**签名请求已发出、正等钱包回应**时出现。签名一有结果（确认 / 拒绝 / 出错），信号归零，
+ * 浮层立刻消失；所以不会出现「认证都好了浮层还挂着」。
  *
- * ## 为什么要 350ms 去抖
+ * ## 350ms 去抖
  *
- * 桌面扩展的签名弹窗几乎是秒开秒确认，网页端连接也很快。那种一两百毫秒就过去的等待，
- * 弹个浮层再立刻收掉只会「闪一下」，比不弹更糟。所以等待超过 350ms 才真正显示 —— 快的
- * 流程（桌面）悄无声息，慢的流程（手机往返钱包）才给反馈，正好对上用户说的「网页端很快、
- * 手机端慢」。
+ * 桌面扩展常常秒开秒确认，一两百毫秒就过去的签名弹个浮层再立刻收只会「闪一下」。等待超过
+ * 350ms 才显示：快流程（桌面）悄无声息，慢流程（手机往返钱包）才给反馈。
  *
- * ## 为什么留一个「关闭提示」
+ * ## 绝不把人困住
  *
- * 浮层是全屏遮挡的。正常情况下每一段等待都绑在会 resolve/reject 的异步操作上（连接被拒、
- * 签名被拒都会收尾），浮层自动消失。但手机端 WalletConnect 的会话偶尔会**静默断掉**，
- * 那时没有收尾事件、浮层会一直挂着。给一个纯前端的「关掉这层提示」的出口兜底（它不取消
- * 底下的操作，只是把这层遮罩收起来），免得真卡住时连页面都点不动。
+ * 浮层是提示，不是关卡：它从不阻挡底层流程推进（SDK 等的是钱包的回应，与这层无关），而且
+ * 永远留一个显眼的「关闭」出口。手机上偶有钱包没被自动唤到前台、签名请求挂在后台的情况，
+ * 这时浮层会一直等 —— 所以等久了（6 秒）追加一句「钱包没弹出就手动切过去，或关闭重试」，
+ * 关掉后在这次签名结束前不再弹，人可以自行切去钱包或重来，不会卡死在一张盖板上。
  */
 export function WalletWaitOverlay() {
   useLang() // 切语言时跟着重渲染
-  const kind = useSyncExternalStore<WalletWaitKind | null>(subscribeWalletWait, getWalletWait, () => null)
+  const signing = useSyncExternalStore(subscribeWalletSigning, getWalletSigning, () => false)
   const [visible, setVisible] = useState(false)
+  const [slow, setSlow] = useState(false)
   const [dismissed, setDismissed] = useState(false)
 
   useEffect(() => {
-    if (!kind) {
+    if (!signing) {
       setVisible(false)
+      setSlow(false)
       setDismissed(false)
       return
     }
-    // 新一段等待：清掉上一段手动关掉的状态，并起 350ms 去抖
+    // 新一段签名等待：清掉上一段的手动关闭 / 久等标记，起 350ms 去抖；显示后再数 6 秒算「久等」
     setDismissed(false)
-    const t = window.setTimeout(() => setVisible(true), 350)
-    return () => window.clearTimeout(t)
-  }, [kind])
+    setSlow(false)
+    const show = window.setTimeout(() => setVisible(true), 350)
+    const long = window.setTimeout(() => setSlow(true), 6000)
+    return () => {
+      window.clearTimeout(show)
+      window.clearTimeout(long)
+    }
+  }, [signing])
 
-  if (!kind || !visible || dismissed) return null
-
-  const copy = {
-    connect: {
-      title: tr('正在连接钱包…', 'Connecting wallet…'),
-      hint: tr('请在钱包里确认连接请求。手机钱包可能要等几秒才弹出。', 'Confirm the connection in your wallet. On mobile it can take a few seconds to appear.'),
-    },
-    switch: {
-      title: tr('正在切换网络…', 'Switching network…'),
-      hint: tr('请在钱包里确认切换到 Polygon 网络。', 'Confirm the switch to the Polygon network in your wallet.'),
-    },
-    sign: {
-      title: tr('正在等待钱包确认…', 'Waiting for your wallet…'),
-      hint: tr('请回到钱包里确认。首次下单可能要连续确认多次（派生凭据、授权、下单），每弹出一次就回钱包点一下。', 'Return to your wallet to confirm. The first order may ask you to confirm several times in a row (credentials, approvals, order) — go back to the wallet for each prompt.'),
-    },
-  }[kind]
+  if (!signing || !visible || dismissed) return null
 
   return createPortal(
     <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm">
       <div className="w-full max-w-xs rounded-xl border border-border bg-card p-5 text-center shadow-2xl">
         <Spinner className="mx-auto size-8 text-primary" />
-        <p className="mt-3 text-sm font-semibold text-foreground">{copy.title}</p>
-        <p className="mt-1.5 text-[11px] leading-relaxed text-muted-foreground">{copy.hint}</p>
+        <p className="mt-3 text-sm font-semibold text-foreground">{tr('正在等待钱包确认…', 'Waiting for your wallet…')}</p>
+        <p className="mt-1.5 text-[11px] leading-relaxed text-muted-foreground">
+          {tr('请回到钱包里确认这次签名。首次下单可能要连续确认多次（派生凭据、授权、下单）。', 'Return to your wallet to confirm this signature. The first order may ask you to confirm several times in a row (credentials, approvals, order).')}
+        </p>
+        {slow && (
+          <p className="mt-2 rounded border border-warning/30 bg-warning/10 p-2 text-[10px] leading-snug text-warning">
+            {tr('钱包没有自动弹出？请手动切到钱包 App 确认，或关闭本提示后重试。', "Wallet didn't open automatically? Switch to your wallet app to confirm, or dismiss this and retry.")}
+          </p>
+        )}
         <button
           type="button"
           onClick={() => setDismissed(true)}
-          className="mt-3 text-[11px] text-muted-foreground underline underline-offset-2 hover:text-foreground"
+          className="mt-3 w-full rounded-md border border-border px-2 py-1.5 text-[11px] font-medium text-foreground hover:bg-muted"
         >
-          {tr('关闭提示', 'Dismiss')}
+          {tr('关闭', 'Dismiss')}
         </button>
       </div>
     </div>,
