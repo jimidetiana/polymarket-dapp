@@ -1,13 +1,14 @@
 /**
- * Gamma 数据整形测试：把拆散的子赛事合回一场、把子赛事的盘口合成一份。
+ * Gamma 数据整形测试：把拆散的子赛事合回一场、把子赛事的盘口合成一份，
+ * 外加列表拉取的**分页策略**（那一部分要把 fetch 换掉，见文件末尾）。
  *
- * 两个函数都是纯函数，这里不碰网络。重点是列表**不带盘口**之后的两条：
- * 排序改用子赛事数、成交额改从 event.volume 汇总 —— 这两处退化了界面上
- * 看不出来，只会觉得「顺序怎么怪怪的」。
+ * 合并那两个函数是纯函数，只有末尾的分页用例碰「网络」（stub 掉的假 Gamma）。
+ * 重点是列表**不带盘口**之后的两条：排序改用子赛事数、成交额改从 event.volume
+ * 汇总 —— 这两处退化了界面上看不出来，只会觉得「顺序怎么怪怪的」。
  */
-import { test } from 'vitest'
+import { test, vi } from 'vitest'
 import assert from 'node:assert/strict'
-import { mergeIntoMatches, mergeMarkets, type GammaEvent } from './gamma'
+import { fetchSoccerMatches, mergeIntoMatches, mergeMarkets, type GammaEvent } from './gamma'
 
 function ev(over: Partial<GammaEvent> & { id: string; title: string }): GammaEvent {
   return { ...over }
@@ -76,4 +77,65 @@ test('合并盘口：按 id 去重，跳过已结束的', () => {
     markets.map((m) => m.id),
     ['m1', 'm3'],
   )
+})
+
+/** 假 Gamma：`/events/pagination` 回总数，`/events` 按 offset 回一页（每页 perPage 场独立比赛） */
+function fakeGamma(total: number, perPage = 100) {
+  return vi.fn(async (url: string) => {
+    const u = new URL(url)
+    if (u.pathname === '/events/pagination') {
+      return new Response(JSON.stringify({ pagination: { totalResults: total } }))
+    }
+    const offset = Number(u.searchParams.get('offset') ?? 0)
+    // 末页不满：真实接口按剩余条数回
+    const n = Math.max(0, Math.min(perPage, total - offset))
+    const events = Array.from({ length: n }, (_, i) => ({
+      id: String(offset + i),
+      title: `Home ${offset + i} FC vs. Away ${offset + i} FC`,
+      endDate: '2026-10-11T12:00:00Z',
+      tags: [{ slug: 'soccer' }],
+    }))
+    return new Response(JSON.stringify(events))
+  })
+}
+
+function offsetsOf(fetchMock: ReturnType<typeof fakeGamma>): number[] {
+  return fetchMock.mock.calls
+    .map(([url]) => new URL(String(url)))
+    .filter((u) => u.pathname === '/events')
+    .map((u) => Number(u.searchParams.get('offset') ?? 0))
+}
+
+/**
+ * 总数是**事件数**（含衍生赛事），不是比赛数 —— 2026-10 线上真踩过：
+ * 窗口里涨到 3018 个 event（约 460 场），老代码拿总数当比赛数、超过 20 页就抛
+ * 「赛事多达 N 个，超出预期，先不拉」，整个比赛列表一场都拉不出来。
+ *
+ * 现在钉住两条：页数按 Gamma 的 offset 上限截（**不抛**），场数按上限截。
+ */
+test('总数远超预期时截页而不报错，场数按上限截', async () => {
+  const fetchMock = fakeGamma(3018, 100)
+  vi.stubGlobal('fetch', fetchMock)
+  try {
+    const matches = await fetchSoccerMatches()
+    const offsets = offsetsOf(fetchMock)
+    // 21 页 = offset 0…2000；再深 Gamma 会回 422
+    assert.deepEqual(offsets, Array.from({ length: 21 }, (_, i) => i * 100))
+    // 21 页 × 100 场 = 2100 场候选，被 MAX_MATCHES 截到 500
+    assert.equal(matches.length, 500)
+  } finally {
+    vi.unstubAllGlobals()
+  }
+})
+
+test('窗口内就几页时按实际页数拉，不截', async () => {
+  const fetchMock = fakeGamma(150, 100)
+  vi.stubGlobal('fetch', fetchMock)
+  try {
+    const matches = await fetchSoccerMatches()
+    assert.deepEqual(offsetsOf(fetchMock), [0, 100])
+    assert.equal(matches.length, 150)
+  } finally {
+    vi.unstubAllGlobals()
+  }
 })

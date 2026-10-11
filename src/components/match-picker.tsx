@@ -249,7 +249,7 @@ export function MatchPicker({
  * 全看盘口族多不多，那是这一页最该看的一个数。
  *
  * 显示的是子赛事数而不是盘口数：列表是不带盘口拉的（gamma.ts 的
- * fetchSoccerEvents 解释了为什么），盘口数只有选中那场才知道。一族盘口对应
+ * fetchSoccerMatches 解释了为什么），盘口数只有选中那场才知道。一族盘口对应
  * 一个子赛事，所以子赛事数是同一件事的粗刻度：1 = 只有胜平负，7 = 全套。
  */
 function MatchRow({

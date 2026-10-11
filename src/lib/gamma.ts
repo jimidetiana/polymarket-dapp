@@ -37,10 +37,29 @@ const SOCCER_TAG_SLUG = 'soccer'
 const PAGE_SIZE = 100
 
 /**
- * 兜底：48h 内的足球赛事再多也不该超过这么多页（实测 3 页）。
- * 超过说明接口回了个怪总数，报错比照着它拉 2000 页好。
+ * Gamma 的 offset 上限：**一次查询最多只翻得到第 2100 个 event**。
+ *
+ * 实测（2026-10-10）：`offset=2000` 正常回 100 条，`offset=2050` 直接回 422
+ * `offset too large, use /events/keyset for deeper pagination`。`limit` 同样是
+ * 硬的（200 / 500 都只回 100 条），所以 21 页就是 `/events` 能给的全部。
+ *
+ * 再深只能换 `/events/keyset` 的游标，而游标**只能串行**翻页（每页一次往返）——
+ * 多出来的 event 不到总数的三分之一，却要多付一轮串行等待和近一半流量。
+ * 现在的取舍是不要它；真需要时见 fetchSoccerMatches 的说明。
  */
-const MAX_PAGES = 20
+const MAX_OFFSET = 2000
+const MAX_PAGES = MAX_OFFSET / PAGE_SIZE + 1
+
+/**
+ * 一次拉回来的**比赛**上限（合并衍生赛事之后的场数）。
+ *
+ * 500 是定的口径，不是量出来的：2026-10-10 实测 21 页（= offset 上限）拿回 333 场，
+ * 而窗口里的 event 总数是 3018 —— 按同样的 event/比赛比推算，整个窗口约 460 场。
+ * 两个数都在 500 以内，所以现在截不到东西，留着是防赛程变密。顺序用
+ * mergeIntoMatches 的**重要性**排序（子赛事多的在前），真要截断时丢的是盘口族
+ * 最少的那几场，而不是随手砍掉一半。
+ */
+const MAX_MATCHES = 500
 
 export type GammaTag = { id?: string; slug?: string; label?: string }
 
@@ -174,7 +193,7 @@ function isSoccer(evt: GammaEvent): boolean {
 }
 
 /**
- * 拉未结束的足球赛事 —— **只拉赛事本身，不带盘口**。
+ * 拉时间窗内的足球**比赛**（衍生赛事已合并）—— **不带盘口**。
  *
  * 时间窗用北京时区的「今天+明天」：足球赛程基本按亚洲时间展示，
  * 且晚场需要提前就能看到。与原项目取同一个窗口，免得两边看到的比赛不一样。
@@ -184,8 +203,7 @@ function isSoccer(evt: GammaEvent): boolean {
  * 实测（2026-09-22）一页 100 个赛事带盘口是 4 MB，光盘口的 description 一项
  * 就占一半；而列表页只用得上标题、时间、联赛图、成交额。`include_markets=false`
  * 让同一页缩到 470 KB。盘口在选中某场比赛时再按 id 单独拉（fetchMatchMarkets），
- * 一场 300 KB 上下 —— 首屏从 21 MB 降到 2 MB 以内。Gamma 不认 `fields=`
- * 之类的字段裁剪参数，这是唯一能用的开关。
+ * 一场 300 KB 上下。Gamma 不认 `fields=` 之类的字段裁剪参数，这是唯一能用的开关。
  *
  * ## 为什么先问总数
  *
@@ -197,10 +215,21 @@ function isSoccer(evt: GammaEvent): boolean {
  * 中途某一页失败**直接抛**（Promise.all 的语义），不做「拿到多少算多少」：
  * 那等于把静默截断又做了一遍，只是换了个地方。宁可报错让人看见。
  *
+ * ## 总数是「事件」不是「比赛」—— 别拿它当比赛数看
+ *
+ * Polymarket 把一场比赛的盘口族拆成多个 event（见 mergeIntoMatches），所以
+ * totalResults 是**事件数**，比比赛数大好几倍（实测 2026-10-10：3018 个 event，
+ * 约 460 场）。曾经这里把 totalResults 当比赛数，超过 20 页就抛「赛事多达 N 个，
+ * 超出预期，先不拉」—— 那个守卫在 2026-10 撞上了这个落差，整个列表直接拉不出来。
+ * 现在按 event 数定页数、按**比赛**数设上限（MAX_MATCHES），两个量各归各的。
+ *
+ * 页数还受 Gamma 的 offset 上限约束（MAX_OFFSET）：赛程再密也只拉得到 21 页，
+ * 剩下的取不到。宁可少也不要报错 —— 报错等于一场都看不到。
+ *
  * 拿回来仍过一遍 `isSoccer`：服务端按 tag 筛与客户端按 tag 判是同一条规则，
  * 正常情况下一个都筛不掉；留着是防 Gamma 哪天把 slug 的语义改宽。
  */
-export async function fetchSoccerEvents(): Promise<GammaEvent[]> {
+export async function fetchSoccerMatches(): Promise<SoccerMatch[]> {
   const now = new Date()
   const start = new Date(
     Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - 1, 16, 0, 0),
@@ -227,8 +256,9 @@ export async function fetchSoccerEvents(): Promise<GammaEvent[]> {
   if (typeof total !== 'number' || !Number.isFinite(total)) {
     throw new GammaError(tr('Gamma 没有返回赛事总数，无法确认能否拉全', 'Gamma returned no event total; cannot tell if the list is complete'), false)
   }
-  const pages = Math.ceil(total / PAGE_SIZE)
-  if (pages > MAX_PAGES) throw new GammaError(tr(`足球赛事多达 ${total} 个，超出预期，先不拉`, `${total} soccer events is more than expected; not fetching`), false)
+  // 总数定页数，但不超过 offset 上限（MAX_OFFSET）
+  const wanted = Math.ceil(total / PAGE_SIZE)
+  const pages = Math.min(wanted, MAX_PAGES)
 
   const batches = await Promise.all(
     Array.from({ length: pages }, (_, i) =>
@@ -242,22 +272,25 @@ export async function fetchSoccerEvents(): Promise<GammaEvent[]> {
     events.push(...b)
   }
   const soccer = events.filter(isSoccer)
+  // 合并衍生赛事 → 一场一行，再按重要性截到 MAX_MATCHES（见那里的说明）
+  const matches = mergeIntoMatches(soccer).slice(0, MAX_MATCHES)
 
-  // 目标三「先测量」的探针：这是首屏最重的一次拉取，页数和耗时要看得见。
-  // 两个数正常应相等；前者明显小说明 isSoccer 在客户端筛掉了东西，去查 tags
+  // 目标三「先测量」的探针：这是首屏最重的一次拉取，页数、场数和耗时要看得见。
+  // soccer.length 与 total 正常应相等；明显小说明 isSoccer 在客户端筛掉了东西，去查 tags
   if (import.meta.env.DEV) {
+    const cut = pages < wanted ? ` · 另有 ${total - pages * PAGE_SIZE} 个 event 超出 offset 上限` : ''
     console.debug(
-      `[gamma] 足球赛事 ${soccer.length}/${total} 个 · ${pages} 页并行 · ${Math.round(performance.now() - t0)}ms`,
+      `[gamma] 足球赛事 ${soccer.length}/${total} 个 → ${matches.length} 场 · ${pages} 页并行${cut} · ${Math.round(performance.now() - t0)}ms`,
     )
   }
 
-  return soccer
+  return matches
 }
 
 /**
  * 一场比赛（把 Polymarket 拆开的多个衍生赛事合回一场）。
  *
- * **不带盘口**：列表是不带 markets 拉的（见 fetchSoccerEvents），盘口按
+ * **不带盘口**：列表是不带 markets 拉的（见 fetchSoccerMatches），盘口按
  * `eventIds` 在选中时另拉（fetchMatchMarkets）。
  */
 export type SoccerMatch = {

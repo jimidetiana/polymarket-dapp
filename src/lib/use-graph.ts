@@ -17,8 +17,7 @@ import {
   fetchEventsByIds,
   fetchMatchMarkets,
   fetchMatchesByIds,
-  fetchSoccerEvents,
-  mergeIntoMatches,
+  fetchSoccerMatches,
   tickOf,
   toGraphMarketInput,
   type PositionMarketInfo,
@@ -46,16 +45,17 @@ export type MatchListState = {
 }
 
 /**
- * 拉今天+明天的足球比赛，已合并衍生赛事并按盘口数排序。
+ * 拉今天+明天的足球比赛，已合并衍生赛事、并按重要性截到上限。
  *
  * 走 react-query 而不是裸 useEffect：比赛列表是整个应用最重的一次拉取
- * （每页约 4 MB），而它的变化是「按赛程冒出来」的 —— 5 分钟内重复拉只会
- * 重付同样的流量，拿回同样的结果。切到字典页再切回来也不该重拉。
+ * （实测 2026-10-10：21 页 × 约 450 KB ≈ 9 MB，见 lib/gamma.fetchSoccerMatches），
+ * 而它的变化是「按赛程冒出来」的 —— 5 分钟内重复拉只会重付同样的流量，拿回
+ * 同样的结果。切到字典页再切回来也不该重拉。
  */
 export function useSoccerMatches(): MatchListState {
   const q = useQuery({
     queryKey: ['soccer-matches'],
-    queryFn: async () => mergeIntoMatches(await fetchSoccerEvents()),
+    queryFn: fetchSoccerMatches,
     staleTime: 5 * 60 * 1000,
   })
 
