@@ -68,6 +68,30 @@ describe('触摸手势', () => {
   })
 })
 
+describe('分析面板默认开合', () => {
+  // 这两种情况下夹具里都没有盘口，面板本体渲染的是「推不出来」那张卡片 ——
+  // 用它的文案当「面板在不在」的判据，比用标题可靠（标题和收起态的按钮文案重名）
+  const PANEL = '推不出比分'
+
+  it('宽屏默认展开：按钮是「收起分析」，面板已渲染', () => {
+    // 没有 window 的静态渲染走的就是宽屏那条分支（与加这个开关之前一致）
+    const html = render()
+    expect(html).toContain('收起分析')
+    expect(html).toContain(PANEL)
+  })
+
+  it('窄屏默认收起：只留按钮，面板不渲染，点开前不占地方', () => {
+    vi.stubGlobal('window', { matchMedia: () => ({ matches: false }) })
+    try {
+      const html = render()
+      expect(html).toContain('实时分析')
+      expect(html).not.toContain(PANEL)
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+})
+
 describe('合成盘口的刻度层', () => {
   const priced = (asks: Record<string, number>) => {
     const markets = [

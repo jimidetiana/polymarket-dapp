@@ -126,6 +126,26 @@ function useElementSize<T extends HTMLElement>() {
   return [ref, size] as const
 }
 
+/**
+ * 分析面板默认**展开**的视口条件：宽屏（同左栏从抽屉变常驻的那个断点，见 App.tsx 的 `lg:`）。
+ *
+ * 窄屏默认收起 —— 面板固定 256px 宽，而手机画布容器只有 ~366px，展开时盖掉三分之二的图，
+ * 「挡视线」说的就是这个。宽屏画布够大，常驻着省一次点击。
+ */
+const PANEL_QUERY = '(min-width: 1024px)'
+
+/**
+ * 分析面板的初始开合。窄屏收起、宽屏展开。
+ *
+ * 取 `window` 而不是量出来的容器宽度：容器尺寸要等 ResizeObserver 先报一次，那一帧
+ * 会先按「宽屏」把面板渲染出来再收回去，手机上就是一次闪烁。没有 `window`（静态渲染）
+ * 时按展开 —— 与加这个开关之前的表现一致。
+ */
+function panelDefaultOpen(): boolean {
+  if (typeof window === 'undefined') return true
+  return window.matchMedia?.(PANEL_QUERY)?.matches ?? true
+}
+
 export function primaryPrice(n: GraphNode): number | null {
   const s = n.sides.find((x) => x.name === n.primarySide) ?? n.sides[0]
   if (!s) return null
@@ -301,6 +321,11 @@ export function MarketGraphCanvas({
    */
   const [composite, setComposite] = useState<{ id: string; d: number; pinned: boolean } | null>(null)
   const [expanded, setExpanded] = useState(false)
+  /**
+   * 分析面板开着没有。初值只取一次（见 panelDefaultOpen）—— 之后全是用户的选择，
+   * 转屏、缩放窗口都不该把它收走。
+   */
+  const [panelOpen, setPanelOpen] = useState(panelDefaultOpen)
   const visibleSlots = useMemo(
     () => expanded ? slots : slots.filter((s) => !isOuterSlot(s)),
     [slots, expanded],
@@ -1140,15 +1165,28 @@ export function MarketGraphCanvas({
         口径是「只算图上显示了的盘口」（见 totalGoals 的说明），所以它和「展示更多」
         是联动的：点开更多档，这里跟着多出更大的进球数。
 
+        **窄屏默认收起**（见 PANEL_QUERY）：手机上面板比图还占地方。按钮始终在，
+        点开才占地方，宽窄屏一致 —— 宽屏想收起也点得动。
         z 与左边那列同档；悬浮详情（z-50）会盖在它上面。
       */}
-      <div className="pointer-events-none absolute right-3 top-3 z-40 w-64">
-        <ScorePanel
-          title={tr('实时分析', 'Live')}
-          base={scores}
-          tilted={scoresTilted}
-          alpha={HEAT_ALPHA}
-        />
+      <div className="pointer-events-none absolute right-3 top-3 z-40 flex w-64 flex-col gap-2">
+        <button
+          type="button"
+          aria-expanded={panelOpen}
+          onClick={() => setPanelOpen((value) => !value)}
+          onPointerDown={(e) => e.stopPropagation()}
+          className="pointer-events-auto self-end rounded-md border border-border bg-popover/90 px-2 py-1 text-[11px] text-foreground/80 shadow-sm backdrop-blur-sm hover:bg-muted"
+        >
+          {panelOpen ? tr('收起分析', 'Hide analysis') : tr('实时分析', 'Show analysis')}
+        </button>
+        {panelOpen && (
+          <ScorePanel
+            title={tr('实时分析', 'Live')}
+            base={scores}
+            tilted={scoresTilted}
+            alpha={HEAT_ALPHA}
+          />
+        )}
       </div>
 
       {/*
