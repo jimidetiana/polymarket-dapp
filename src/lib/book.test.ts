@@ -89,6 +89,30 @@ test('mergeQuote：price_change 单侧按 side 归位', () => {
   assert.equal(sell.bid, 0.4)
 })
 
+test('mergeQuote：price_change 条目带 best_* 时，档位价不能覆盖买一卖一', () => {
+  // Polymarket 的 price_change 条目里 `price` 是「变动的那个档位」的价，不是最优价。
+  // 有人在远档（0.30）加单，若拿 price 当买一，盘口图上的价会从 0.49 瞬跳到 0.30 ——
+  // 这正是「图上的价疯狂波动、点进去那本盘却很稳」的成因（点进去走 REST 全量拉）
+  const prev: Quote = { bid: 0.49, ask: 0.51, bidSize: 100, askSize: 80, at: 1 }
+  const q = mergeQuote(prev, { price: '0.30', side: 'BUY', best_bid: '0.49', best_ask: '0.51' }, 2)
+  assert.equal(q.bid, 0.49, '买一应取 best_bid，不是档位价 0.30')
+  assert.equal(q.ask, 0.51)
+  assert.equal(q.bidSize, 100, '买一没变，量应继承')
+
+  // 最优价确实也动了：跟 best_*，仍然不是档位价
+  const moved = mergeQuote(prev, { price: '0.30', side: 'BUY', best_bid: '0.48', best_ask: '0.51' }, 2)
+  assert.equal(moved.bid, 0.48)
+  assert.notEqual(moved.bid, 0.3, '任何时候都不该取档位价')
+  assert.equal(moved.bidSize, null, '买一变了，旧量作废')
+})
+
+test('mergeQuote：best_* 缺失时才退回档位价（老消息形态）', () => {
+  const prev: Quote = { bid: 0.49, ask: 0.51, bidSize: 100, askSize: 80, at: 1 }
+  const q = mergeQuote(prev, { price: '0.45', side: 'BUY' }, 2)
+  assert.equal(q.bid, 0.45, '没有 best_bid 时，档位价是唯一能用的信息')
+  assert.equal(q.ask, 0.51, '另一侧不动')
+})
+
 test('mergeQuote：无 prev 时从空报价起算', () => {
   const q = mergeQuote(undefined, { best_bid: '0.3', best_ask: '0.7' }, 5)
   assert.equal(q.bid, 0.3)

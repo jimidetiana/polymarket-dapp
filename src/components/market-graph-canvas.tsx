@@ -45,6 +45,19 @@ import { tr, useLang } from '@/lib/i18n'
 import { PALETTES, DEFAULT_PALETTE, type TeamPaletteKey } from '@/lib/palette'
 import { positionKind, slotPositionMark, type PositionIndex, type SlotPositionMark } from '@/lib/positions'
 import { ExportBookButton } from './export-book-button'
+import { ScorePanel } from './score-panel'
+import { scoreGrid, tiltByHeat } from '@/graph/score-grid'
+
+/**
+ * 热度把比分推向「庄家盈利方向」的强度。
+ *
+ * `0` = 不推（两套预测完全相同）；越大推得越狠。取 1 是个保守的默认：
+ * 权重按 `(1/ratio)^1` 调整，即「钱相对价少一半的比分，权重翻倍」。
+ *
+ * 放在这里而不是做成界面上的滑杆：面板是常驻浮层，加交互控件会和画布的拖动、
+ * 节点的点击抢事件。要调就先改这个常量（改完 HMR 立刻生效）。
+ */
+const HEAT_ALPHA = 1
 import type { GraphGoalCounts, GraphNode, GraphSlot, MarketGraph } from '@/types/market-graph'
 import { BASE_R, layoutSlots, type Pt } from '@/lib/layout'
 import { isOuterSlot } from '@/graph/template'
@@ -305,6 +318,29 @@ export function MarketGraphCanvas({
     for (const s of visibleSlots) if (s.nodeId) set.add(s.nodeId)
     return set
   }, [visibleSlots])
+
+  /**
+   * 比分网格（口径见 graph/score-grid.ts 顶部）。
+   *
+   * 直接吃 visibleNodeIds —— 也就是**此刻画在图上**的那些档（大小球 + 让球 + 胜平负）。
+   * 所以点「展示更多 / 折叠盘口」时它跟着变，不需要另定义一套「什么算可见」，
+   * 两边不会漂移。用户的口径就是「只分析图上显示了的盘口」。
+   *
+   * ⚠️ 开赛后已打出的档会掉出报价集合（结算后 ask=1，被 toLiveQuotes 当不可成交滤掉），
+   * 梯子从底部断掉 → 这里返回 null → 面板显示「推不出来」。少显示，但不显示错的。
+   */
+  const scores = useMemo(
+    () => scoreGrid(graph, visibleNodeIds, { maxGoals: 4 }),
+    [graph, visibleNodeIds],
+  )
+  /**
+   * 第二套：在上一套的基础上按热度推向「庄家盈利方向」（公式见 score-grid.ts
+   * 的 tiltByHeat）。**它是另一个问题，不是更准的预测** —— 面板上两套并列、各自标注。
+   */
+  const scoresTilted = useMemo(
+    () => (scores ? tiltByHeat(scores, HEAT_ALPHA) : null),
+    [scores],
+  )
 
   // 图例用的队名：有中文用中文，否则回退英文。类型保证是 string，可能为空串。
   const homeTeam = graph.homeTeamZh || graph.homeTeamEn
@@ -1044,57 +1080,75 @@ export function MarketGraphCanvas({
       </svg>
 
       {/*
-        主客队配色图例：左上角常驻，把节点的暖/冷填充色对应到具体球队名，
-        看第一眼就知道「哪种颜色是哪队」。不列中性色 —— 它不对应球队。
-        z 比悬浮详情（z-50）低：hover 某节点时详情盖在它上面
-        （两者都落在左上角），不 hover 时图例常驻。
-      */}
-      {(homeTeam || awayTeam) && (
-        <div className="pointer-events-none absolute left-3 top-3 z-30 flex flex-col gap-1.5 rounded-lg border border-border bg-popover/90 px-2.5 py-2 shadow-sm backdrop-blur-sm">
-          {homeTeam && <TeamLegendRow color={palette.home} role={tr('主队', 'Home')} name={homeTeam} />}
-          {awayTeam && <TeamLegendRow color={palette.away} role={tr('客队', 'Away')} name={awayTeam} />}
-        </div>
-      )}
+        左上角一列：队徽图例 + 三个控件（价格口径 / 导出盘口 / 展示更多）。
 
-      {/*
-        价格口径开关（概率 % ↔ 欧赔）。放画布右上角，贴着它作用的那些数字 ——
-        原来在顶栏，那里离节点上的价格隔着一整张图，「切完之后看的是哪里的数」
-        要靠记。挪过来之后按钮和价格在同一视野里。
+        为什么整列都在左边：右边让给分析面板，而且这几个按钮**作用的对象就在图上**
+        ——「导出盘口」导的是此刻显示的这些盘口，「展示更多」改的也是图上露多少。
+        贴着它们作用的东西放，比放在离图一整个屏幕的顶栏要好。
 
-        和缩放控件一样放在容器里而不是 SVG 里：SVG 里的按钮会跟着内容一起缩放
-        平移，放大后自己就跑出画面了。
+        队徽图例不列中性色 —— 它不对应球队。z 比悬浮详情（z-50）低：hover 某节点时
+        详情盖在整列上面（两者都落在左上角），不 hover 时这一列常驻。
+
+        容器 pointer-events-none、只有按钮那截 pointer-events-auto：空白处仍能拖动画布。
       */}
-      <div
-        className="pointer-events-auto absolute right-3 top-3 z-40 flex flex-col items-end gap-2"
-        onPointerDown={(e) => e.stopPropagation()}
-      >
-        {onTogglePriceMode && (
+      <div className="pointer-events-none absolute left-3 top-3 z-40 flex flex-col items-start gap-2">
+        {(homeTeam || awayTeam) && (
+          <div className="flex flex-col gap-1.5 rounded-lg border border-border bg-popover/90 px-2.5 py-2 shadow-sm backdrop-blur-sm">
+            {homeTeam && <TeamLegendRow color={palette.home} role={tr('主队', 'Home')} name={homeTeam} />}
+            {awayTeam && <TeamLegendRow color={palette.away} role={tr('客队', 'Away')} name={awayTeam} />}
+          </div>
+        )}
+
+        <div
+          className="pointer-events-auto flex flex-col items-start gap-2"
+          onPointerDown={(e) => e.stopPropagation()}
+        >
+          {onTogglePriceMode && (
+            <button
+              type="button"
+              onClick={onTogglePriceMode}
+              className="rounded-md border border-border bg-popover/90 px-2 py-1 text-[11px] text-foreground/80 shadow-sm backdrop-blur-sm hover:bg-muted"
+            >
+              {priceModeLabel(priceMode)}
+            </button>
+          )}
+          {/*
+            导出图上此刻显示的那些盘口 + 每侧前 3 档挂单。摆在这里是因为它导的就是
+            这张图上的东西 —— 包括「展示更多 / 折叠盘口」此刻露出了哪些（见 visibleNodeIds）。
+          */}
+          <ExportBookButton graph={graph} nodeIds={visibleNodeIds} eventIds={eventIds} />
           <button
             type="button"
-            onClick={onTogglePriceMode}
-            className="rounded-md border border-border bg-popover/90 px-2 py-1 text-[11px] text-foreground/80 shadow-sm backdrop-blur-sm hover:bg-muted"
+            aria-expanded={expanded}
+            onClick={() => {
+              setExpanded((value) => !value)
+              setHover(null)
+              setView(IDENTITY)
+              onSelect(null)
+            }}
+            className="rounded-md border border-border bg-popover/90 px-2 py-1.5 text-[11px] text-foreground/80 shadow-sm backdrop-blur-sm hover:bg-muted"
           >
-            {priceModeLabel(priceMode)}
+            {expanded ? tr('折叠盘口', 'Collapse markets') : tr('展示更多', 'Show more')}
           </button>
-        )}
-        {/*
-          导出图上此刻显示的那些盘口 + 每侧前 3 档挂单。摆在这里是因为它导的就是
-          这张图上的东西 —— 包括「展示更多 / 折叠盘口」此刻露出了哪些（见 visibleNodeIds）。
-        */}
-        <ExportBookButton graph={graph} nodeIds={visibleNodeIds} eventIds={eventIds} />
-        <button
-          type="button"
-          aria-expanded={expanded}
-          onClick={() => {
-            setExpanded((value) => !value)
-            setHover(null)
-            setView(IDENTITY)
-            onSelect(null)
-          }}
-          className="rounded-md border border-border bg-popover/90 px-2 py-1.5 text-[11px] text-foreground/80 shadow-sm backdrop-blur-sm hover:bg-muted"
-        >
-          {expanded ? tr('折叠盘口', 'Collapse markets') : tr('展示更多', 'Show more')}
-        </button>
+        </div>
+      </div>
+
+      {/*
+        分析面板：右上角。原先这一角是那三个控件，控件挪到左边之后腾出来给它。
+
+        纯展示，所以整块 pointer-events-none —— 它盖住的那片画布照样能拖动、能点节点。
+        口径是「只算图上显示了的盘口」（见 totalGoals 的说明），所以它和「展示更多」
+        是联动的：点开更多档，这里跟着多出更大的进球数。
+
+        z 与左边那列同档；悬浮详情（z-50）会盖在它上面。
+      */}
+      <div className="pointer-events-none absolute right-3 top-3 z-40 w-64">
+        <ScorePanel
+          title={tr('实时分析', 'Live')}
+          base={scores}
+          tilted={scoresTilted}
+          alpha={HEAT_ALPHA}
+        />
       </div>
 
       {/*

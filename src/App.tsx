@@ -539,7 +539,7 @@ function GraphPage({ target, openOrder }: { target: ReturnType<typeof parseMarke
               templateEdges={TEMPLATE_EDGES}
               goals={goals}
               priceMode={priceMode}
-              // 口径开关画在画布右上角（挨着它作用的那些数字），状态仍在这层
+              // 口径开关画在画布左上角（挨着它作用的那些数字），状态仍在这层
               onTogglePriceMode={() => setPriceMode(priceMode === 'prob' ? 'odds' : 'prob')}
               // 「导出盘口」把子赛事 id 记进文件 —— 盘口是按它们拉的，记下来才能回查
               eventIds={match?.eventIds}

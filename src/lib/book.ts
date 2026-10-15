@@ -75,12 +75,21 @@ export function quoteFromBook(msg: unknown, now = Date.now()): Quote {
 /**
  * 增量消息（best_bid_ask / price_change）→ 合并进已有 Quote。
  *
- * 这两类只带价格。size 的处理是**价位不变则继承**：
- * 价格没动说明还是同一档挂单，上次的量仍然是当前已知的最好估计；
- * 价格动了就说明换了一档，旧的量不再适用，置 null 等下一次 book 补。
+ * ⚠️ **`price_change` 的条目里 `price` 是「变动的那个档位的价」，不是最优价。**
+ * 条目长这样（Polymarket market channel）：
  *
- * 字段名兼容两种形态：best_bid_ask 用 best_bid/best_ask，
- * price_change 的条目用 price + side。
+ *   { asset_id, price: "0.30", side: "BUY", size: "100",
+ *     best_bid: "0.49", best_ask: "0.51" }
+ *
+ * 有人在一个**远档**（0.30）加单，`price` 就是 0.30 —— 拿它当买一，图上的价格会
+ * 从 0.49 瞬跳到 0.30 再跳回来。这正是「盘口图上的价疯狂波动、点进去那本盘却很稳」
+ * 的原因（点进去走的是 REST 全量拉，不经过这里）。
+ *
+ * 所以**有 best_bid / best_ask 就只信它们，绝不用档位价覆盖**。两者都缺时才退回
+ * 档位价（老版消息形态没有 best_* 字段，那种情况档位价是唯一能用的信息）。
+ *
+ * size 的处理是**价位不变则继承**：价格没动说明还是同一档挂单，上次的量仍是当前
+ * 已知的最好估计；价格动了就说明换了一档，旧的量不再适用，置 null 等下一次 book 补。
  */
 export function mergeQuote(prev: Quote | undefined, msg: unknown, now = Date.now()): Quote {
   const base = prev ?? EMPTY_QUOTE
@@ -89,17 +98,21 @@ export function mergeQuote(prev: Quote | undefined, msg: unknown, now = Date.now
   let bid = base.bid
   let ask = base.ask
 
-  // 形态 A：best_bid_ask —— 两侧一起给
+  // 形态 A：best_bid_ask 事件，或 price_change 条目里自带的 best_bid / best_ask。
+  // 后者才是权威值 —— 见顶部说明
   const bb = num(o.best_bid ?? o.bestBid)
   const ba = num(o.best_ask ?? o.bestAsk)
   if (bb != null) bid = bb
   if (ba != null) ask = ba
 
-  // 形态 B：price_change 条目 —— 单侧，靠 side 区分
-  const side = String(o.side ?? '').toLowerCase()
-  const p = num(o.price)
-  if (p != null && (side === 'buy' || side === 'bid')) bid = p
-  if (p != null && (side === 'sell' || side === 'ask')) ask = p
+  // 形态 B：只带档位价的形态（best_* 缺失时才是唯一信息）。**不能无条件执行** ——
+  // 那会用一个远档的价盖掉 A 拿到的真买一卖一
+  if (bb == null && ba == null) {
+    const side = String(o.side ?? '').toLowerCase()
+    const p = num(o.price)
+    if (p != null && (side === 'buy' || side === 'bid')) bid = p
+    if (p != null && (side === 'sell' || side === 'ask')) ask = p
+  }
 
   return {
     bid,

@@ -15,8 +15,7 @@
 import { test } from 'vitest'
 import {
   fetchMatchMarkets,
-  fetchSoccerEvents,
-  mergeIntoMatches,
+  fetchSoccerMatches,
   toGraphMarketInput,
 } from './src/lib/gamma'
 import { buildMarketGraph } from './src/graph/graph'
@@ -42,7 +41,7 @@ function hint(b: SlotBind): RegExp {
 }
 
 test('无此盘 归因', async () => {
-  const matches = mergeIntoMatches(await fetchSoccerEvents())
+  const matches = await fetchSoccerMatches()
   const want = process.env.MATCH?.toLowerCase()
   const picked = want
     ? matches.filter((m) => m.title.toLowerCase().includes(want))

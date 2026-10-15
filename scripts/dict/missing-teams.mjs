@@ -38,7 +38,17 @@ const TEAMS_JSON = resolve(HERE, '../../src/data/teams.zh.json')
 const GAMMA = 'https://gamma-api.polymarket.com'
 /** Gamma 单页上限。实测 limit=500 也只回 100 条，所以翻页不可避免（同 lib/gamma.ts） */
 const PAGE = 100
-const MAX_PAGES = 20
+/**
+ * Gamma 的 offset 上限（数值同 lib/gamma.ts 的 MAX_OFFSET）：offset=2000 正常，
+ * 再深直接 422 `offset too large, use /events/keyset for deeper pagination`，
+ * 所以一次查询最多看得到 2100 个 event。
+ *
+ * 这里是**警告不报错**（与 lib/gamma.ts 那边一致）：窗口里 event 数超过上限时，
+ * 扫到的那部分照样能补译名，而整脚本退出等于一条都补不上。少扫的部分由
+ * scanWindow 打在 stderr 上，不会静默。
+ */
+const MAX_OFFSET = 2000
+const MAX_PAGES = MAX_OFFSET / PAGE + 1
 
 /**
  * 查表用的规范化键：小写、去掉常见俱乐部后缀/前缀噪音。
@@ -138,7 +148,7 @@ function leagueFromImage(url) {
 /**
  * 扫当前窗口，返回每个队名出现的场次与联赛。
  *
- * 时间窗与 lib/gamma.ts 的 fetchSoccerEvents 完全一致：起点是**北京时区今天 00:00**
+ * 时间窗与 lib/gamma.ts 的 fetchSoccerMatches 完全一致：起点是**北京时区今天 00:00**
  * （= UTC 昨天 16:00），长度 days 天。窗口对不上就会出现「脚本说缺译名、页面上却
  * 没见过这支球队」这种对不上的现象。
  */
@@ -160,10 +170,16 @@ async function scanWindow(days) {
   const head = await gammaGet('/events/pagination', { ...params, limit: 1 })
   const total = head?.pagination?.totalResults
   if (typeof total !== 'number' || !Number.isFinite(total)) throw new Error('Gamma 没有返回赛事总数，无法确认能否拉全')
-  const pages = Math.ceil(total / PAGE)
-  // 超上限就报错而不是截断：少拉几页 = 有些球队静默不出现在「缺译名」里，
-  // 这种少数据的 bug 看不出来（同 lib/gamma.ts 的取舍）
-  if (pages > MAX_PAGES) throw new Error(`足球赛事多达 ${total} 个，超出预期（${MAX_PAGES} 页），先不拉`)
+  const wanted = Math.ceil(total / PAGE)
+  // 超过 offset 上限只能扫一部分：警告而不是退出 —— 扫到的那部分照样能补译名，
+  // 而退出等于一条都补不上。少扫的部分要说出来，别让它变成静默的少数据。
+  const pages = Math.min(wanted, MAX_PAGES)
+  if (pages < wanted) {
+    console.warn(
+      `⚠️ 窗口内 ${total} 个 event，超过 Gamma 的 offset 上限（${MAX_OFFSET}），只扫到前 ${pages * PAGE} 个 —— ` +
+        `剩下 ${total - pages * PAGE} 个里的球队这次发现不了`,
+    )
+  }
 
   const batches = await Promise.all(
     Array.from({ length: pages }, (_, i) => gammaGet('/events', { ...params, offset: i * PAGE })),

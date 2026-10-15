@@ -85,15 +85,16 @@ export function ExportBookButton({
         {busy ? tr('导出中…', 'Exporting…') : tr('导出盘口', 'Export book')}
       </button>
 
-      {/* 结果/错误贴在按钮下方。max-w 收一下：盘口价格就在右上角这一片，
-          一条长文案横过去会把那些数字盖住 */}
+      {/* 结果/错误贴在按钮下方。max-w 收一下：这一列就挂在画布左上角，
+          一条长文案横过去会盖住图上的节点标签。左对齐与按钮一致
+          （整列在左边，右对齐会看着像错位） */}
       {done && (
-        <p className="max-w-[13rem] rounded-md border border-border bg-popover/90 px-2 py-1 text-right text-[10px] leading-snug text-muted-foreground shadow-sm backdrop-blur-sm">
+        <p className="max-w-[13rem] rounded-md border border-border bg-popover/90 px-2 py-1 text-left text-[10px] leading-snug text-muted-foreground shadow-sm backdrop-blur-sm">
           {done}
         </p>
       )}
       {error && (
-        <p className="max-w-[13rem] rounded-md border border-warning/30 bg-warning/10 px-2 py-1 text-right text-[10px] leading-snug text-warning shadow-sm backdrop-blur-sm">
+        <p className="max-w-[13rem] rounded-md border border-warning/30 bg-warning/10 px-2 py-1 text-left text-[10px] leading-snug text-warning shadow-sm backdrop-blur-sm">
           {tr('导出失败：', 'Export failed: ')}
           {error}
         </p>
