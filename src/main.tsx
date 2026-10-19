@@ -5,6 +5,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { wagmiConfig } from './lib/wagmi'
 import './index.css'
 import App from './App.tsx'
+import { ErrorBoundary } from './components/error-boundary'
 import { WalletWaitOverlay } from './components/wallet-wait-overlay'
 
 /**
@@ -30,13 +31,18 @@ document.getElementById('static-fallback')?.remove()
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    <WagmiProvider config={wagmiConfig}>
-      <QueryClientProvider client={queryClient}>
-        <App />
-        {/* 等待钱包的全局浮层：挂在路由之外一份，连接 / 切链 / 下单签名都共用它。
-            放在这里（而不是某个页面里）是因为下单在盘口弹窗、撤单在订单页，两条路径都要它。 */}
-        <WalletWaitOverlay />
-      </QueryClientProvider>
-    </WagmiProvider>
+    {/* 最外层的兜底：放在 Provider **外面**，连 Provider 自己初始化抛错也能接住 ——
+        没有它的话渲染期抛错会卸载整棵树，界面就是一片白（见 components/error-boundary.tsx）。
+        主页面上出错时盖住整屏，用户至少知道「坏了」，并且有一个能用的出口。 */}
+    <ErrorBoundary>
+      <WagmiProvider config={wagmiConfig}>
+        <QueryClientProvider client={queryClient}>
+          <App />
+          {/* 等待钱包的全局浮层：挂在路由之外一份，连接 / 切链 / 下单签名都共用它。
+              放在这里（而不是某个页面里）是因为下单在盘口弹窗、撤单在订单页，两条路径都要它。 */}
+          <WalletWaitOverlay />
+        </QueryClientProvider>
+      </WagmiProvider>
+    </ErrorBoundary>
   </StrictMode>,
 )

@@ -34,6 +34,7 @@ import { WalletMenu } from './components/connect-wallet'
 import { MarketGraphCanvas } from './components/market-graph-canvas'
 import { MatchPicker } from './components/match-picker'
 import { HelpDialog } from './components/help-dialog'
+import { ErrorBoundary } from './components/error-boundary'
 /**
  * 下单弹窗按需加载。
  *
@@ -578,36 +579,48 @@ function GraphPage({ target, openOrder }: { target: ReturnType<typeof parseMarke
           弹窗要跨「换侧」存活，而 onBuy 只在点击瞬间给得出数据。
           换侧只改 pickedSideName，剩下的（token、报价、tick）都由节点的那一侧重新推出来。 */}
       {orderOpen && picked && pickedNode && pickedSide?.tokenId && graph && (
-        <Suspense
-          fallback={
-            <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/70 p-3 text-sm text-muted-foreground backdrop-blur-sm">
-              {tr('正在加载下单面板…', 'Loading order panel…')}
-            </div>
-          }
+        /*
+          这里单独加一层兜底，而不是只靠 main.tsx 那个最外层的：弹窗是 lazy 加载的，
+          加载失败（dev 下依赖预构建过期，线上换部署后旧 chunk 名 404）走的是渲染期
+          抛错那条路 —— 外层兜底会连画布一起盖掉，这一层则让图还留在那里。
+        */
+        <ErrorBoundary
+          hint={tr(
+            '下单面板没能加载出来，多半是页面里的资源过期了。重新加载页面即可。',
+            'The order panel failed to load — usually stale assets in the page. Reloading fixes it.',
+          )}
         >
-          <OrderDialog
-            tokenId={pickedSide.tokenId}
-            sideName={pickedSide.name}
-            // 带上侧名：切到 Under 之后光看「总进球 2.5」分不出买的是哪一边
-            marketLabel={`${picked.label} · ${pickedSide.name}`}
-            marketQuestion={pickedNode.questionZh || pickedNode.questionEn || pickedNode.desc.label}
-            eventTitle={graph.title}
-            // 按盘口查订单只认 conditionId —— data-api 的 `asset=`（tokenId）参数是
-            // 静默忽略的，传了会拿回全部盘口的数据（见 lib/positions.ts 顶部）
-            conditionId={pickedNode.conditionId}
-            sides={pickedSides}
-            onSelectSide={(s) => {
-              setPickedSideName(s.name)
-              // 让球盘的另一侧在图上也有槽位（主队 -1.5 ↔ 客队 +1.5），
-              // 选中跟着挪过去，画布高亮和侧栏才不会还停在原来那侧
-              const hit = slots.find((x) => x.tokenId === s.tokenId)
-              if (hit) setPickedKey(hit.key)
-            }}
-            tickByToken={tickByToken}
-            quotes={book}
-            onClose={() => setOrderOpen(false)}
-          />
-        </Suspense>
+          <Suspense
+            fallback={
+              <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/70 p-3 text-sm text-muted-foreground backdrop-blur-sm">
+                {tr('正在加载下单面板…', 'Loading order panel…')}
+              </div>
+            }
+          >
+            <OrderDialog
+              tokenId={pickedSide.tokenId}
+              sideName={pickedSide.name}
+              // 带上侧名：切到 Under 之后光看「总进球 2.5」分不出买的是哪一边
+              marketLabel={`${picked.label} · ${pickedSide.name}`}
+              marketQuestion={pickedNode.questionZh || pickedNode.questionEn || pickedNode.desc.label}
+              eventTitle={graph.title}
+              // 按盘口查订单只认 conditionId —— data-api 的 `asset=`（tokenId）参数是
+              // 静默忽略的，传了会拿回全部盘口的数据（见 lib/positions.ts 顶部）
+              conditionId={pickedNode.conditionId}
+              sides={pickedSides}
+              onSelectSide={(s) => {
+                setPickedSideName(s.name)
+                // 让球盘的另一侧在图上也有槽位（主队 -1.5 ↔ 客队 +1.5），
+                // 选中跟着挪过去，画布高亮和侧栏才不会还停在原来那侧
+                const hit = slots.find((x) => x.tokenId === s.tokenId)
+                if (hit) setPickedKey(hit.key)
+              }}
+              tickByToken={tickByToken}
+              quotes={book}
+              onClose={() => setOrderOpen(false)}
+            />
+          </Suspense>
+        </ErrorBoundary>
       )}
 
       {helpOpen && <HelpDialog onClose={closeHelp} />}
