@@ -157,7 +157,16 @@ export interface GraphColumn {
   index: number
 }
 
+export interface VolumeSample {
+  byToken: Record<string, number>
+  count: number
+  oldest: number | null
+  newest: number | null
+}
+
 export interface MarketGraph {
+  /** 近期主动成交记录的 USDC 成交额，不是历史累计或持仓。 */
+  volumeSample?: VolumeSample
   eventId: string
   homeTeamEn: string
   awayTeamEn: string

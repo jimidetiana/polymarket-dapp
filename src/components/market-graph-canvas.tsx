@@ -46,6 +46,9 @@ import { PALETTES, DEFAULT_PALETTE, type TeamPaletteKey } from '@/lib/palette'
 import { positionKind, slotPositionMark, type PositionIndex, type SlotPositionMark } from '@/lib/positions'
 import { ExportBookButton } from './export-book-button'
 import { ScorePanel } from './score-panel'
+import { VolumeRing } from './volume-ring'
+import { slotVolumes, VOLUME_COLORS } from '@/lib/market-volume'
+import { VOLUME_TRADE_LIMIT } from '@/lib/positions'
 import { scoreGrid, tiltByHeat } from '@/graph/score-grid'
 
 /**
@@ -387,6 +390,13 @@ export function MarketGraphCanvas({
     for (const n of graph.nodes) m.set(n.id, n)
     return m
   }, [graph.nodes])
+
+  const volumeRows = useMemo(() => slots.filter((s) => s.kind === 'market' && s.nodeId).map((s) => ({
+    key: s.key,
+    label: s.label,
+    ...slotVolumes(nodeById.get(s.nodeId!), s.tokenId, graph.volumeSample),
+  })), [slots, nodeById, graph.volumeSample])
+  const maxVolume = Math.max(0, ...volumeRows.flatMap((v) => [v.own ?? 0, v.opposite ?? 0]))
 
   /**
    * 图上所有已显示的 token。slotPositionMark 用它排除「另一侧其实也有槽位」的情况
@@ -735,6 +745,7 @@ export function MarketGraphCanvas({
           {placed.map((s) => {
             const isGoals = s.kind === 'goals'
             const empty = !isGoals && !s.nodeId
+            const volume = slotVolumes(s.nodeId ? nodeById.get(s.nodeId) : undefined, s.tokenId, graph.volumeSample)
             const selected = selectedKey === s.key
             const dim = neighbours != null && !neighbours.has(s.key)
             const prev = prevPrices[s.key]
@@ -798,7 +809,22 @@ export function MarketGraphCanvas({
                 }}
                 onMouseEnter={() => !empty && setHover(s)}
                 onMouseLeave={() => setHover(null)}
+                tabIndex={empty ? undefined : 0}
+                role={empty ? undefined : 'button'}
+                aria-label={s.label}
+                onFocus={() => !empty && setHover(s)}
+                onBlur={() => setHover(null)}
+                onKeyDown={(ev) => {
+                  if (ev.key === 'Enter' || ev.key === ' ') {
+                    ev.preventDefault()
+                    if (empty) return
+                    if (onBuy && s.kind === 'market' && s.tokenId && s.marketId) onBuy(s)
+                    else onSelect(selected ? null : s.key)
+                  }
+                  if (ev.key === 'Escape') setHover(null)
+                }}
               >
+                {!isGoals && !empty && <VolumeRing {...volume} max={maxVolume} />}
                 <circle
                   cx={0}
                   cy={0}
@@ -837,9 +863,9 @@ export function MarketGraphCanvas({
                       r={20}
                       fill={
                         mark && !mark.ownSide
-                          ? 'var(--pm-state-error)'
+                          ? VOLUME_COLORS.opposite
                           : posKind === 'open'
-                            ? 'var(--pm-state-success)'
+                            ? VOLUME_COLORS.own
                             : 'var(--pm-neutral-500)'
                       }
                       stroke="#ffffff"
@@ -1128,6 +1154,39 @@ export function MarketGraphCanvas({
           className="pointer-events-auto flex flex-col items-start gap-2"
           onPointerDown={(e) => e.stopPropagation()}
         >
+          <details className="max-w-[calc(100vw-3rem)] rounded-lg border border-border bg-popover/95 p-2 text-[10px] text-foreground shadow-sm">
+            <summary className="cursor-pointer">
+              {tr('水位 · 近期成交额', 'Ring · Recent volume')}
+              <span className="mt-1 flex items-center gap-2">
+                <span style={{ color: VOLUME_COLORS.own }} aria-hidden="true">◜</span><span>{tr('左正向', 'Left: same')}</span>
+                <span style={{ color: VOLUME_COLORS.opposite }} aria-hidden="true">◝</span><span>{tr('右反向', 'Right: opposite')}</span>
+              </span>
+              <span className="mt-0.5 block text-muted-foreground">{tr('底部 0 · 顶部', 'Bottom 0 · Top')} {maxVolume > 0 ? formatVolume(maxVolume) : '—'}</span>
+            </summary>
+            <div className="mt-2 w-64 max-w-full">
+              <p className="text-muted-foreground">
+                {tr(`本场最近至多 ${VOLUME_TRADE_LIMIT} 条主动成交记录，按交易的盘口侧累计成交额，买卖均计入；不是历史累计或持仓。`,
+                  `Up to ${VOLUME_TRADE_LIMIT} recent taker records for this match, grouped by traded outcome; buys and sells both count. Not lifetime volume or holdings.`)}
+              </p>
+              <p className="my-1 text-muted-foreground">
+                {graph.volumeSample ? tr(`已取 ${graph.volumeSample.count} 条`, `${graph.volumeSample.count} records`) : tr('暂无成交样本', 'No trade sample available')}
+                {graph.volumeSample?.oldest != null && graph.volumeSample.newest != null && ` · ${new Date(graph.volumeSample.oldest * 1000).toLocaleString()} – ${new Date(graph.volumeSample.newest * 1000).toLocaleString()}`}
+              </p>
+              <div className="max-h-48 overflow-auto">
+                <table className="w-full text-left">
+                  <caption className="sr-only">{tr('盘口近期成交额（USDC）', 'Recent market volume (USDC)')}</caption>
+                  <thead><tr><th>{tr('盘口', 'Market')}</th><th className="text-right">{tr('左·正向', 'Left · Same')}</th><th className="text-right">{tr('右·反向', 'Right · Opposite')}</th></tr></thead>
+                  <tbody>{volumeRows.filter((v) => visibleSlots.some((s) => s.key === v.key)).map((v) => (
+                    <tr key={v.key} className="border-t border-border">
+                      <th className="py-1 font-normal">{v.label}</th>
+                      <td className="text-right font-mono">{v.own == null ? '—' : formatVolume(v.own)}</td>
+                      <td className="text-right font-mono">{v.opposite == null ? '—' : formatVolume(v.opposite)}</td>
+                    </tr>
+                  ))}</tbody>
+                </table>
+              </div>
+            </div>
+          </details>
           {onTogglePriceMode && (
             <button
               type="button"
@@ -1225,6 +1284,7 @@ export function MarketGraphCanvas({
       {hover && (
         <SlotTooltip
           slot={hover}
+          volume={slotVolumes(hover.nodeId ? nodeById.get(hover.nodeId) : undefined, hover.tokenId, graph.volumeSample)}
           node={hover.nodeId ? nodeById.get(hover.nodeId) : undefined}
           hit={slotHit(hover, goals)}
           priceMode={priceMode}
@@ -1261,12 +1321,14 @@ function TeamLegendRow({ color, role, name }: { color: string; role: string; nam
 function SlotTooltip({
   slot,
   node,
+  volume,
   hit,
   priceMode,
   positionMark,
 }: {
   slot: GraphSlot
   node?: GraphNode
+  volume: ReturnType<typeof slotVolumes>
   /** 该线是否已打出。null = 比分未知或非进球盘 */
   hit: boolean | null
   priceMode: PriceMode
@@ -1398,6 +1460,10 @@ function SlotTooltip({
                 </span>
               </div>
             ))}
+          </div>
+          <div className="mt-2 border-t border-border pt-2 text-[10px] text-foreground">
+            <p className="text-muted-foreground">{tr('水位 · 近期成交额（USDC）', 'Ring · Recent volume (USDC)')}</p>
+            <p>{tr('左·正向', 'Left · This side')} {volume.own == null ? '—' : formatVolume(volume.own)} · {tr('右·反向', 'Right · Opposite')} {volume.opposite == null ? '—' : formatVolume(volume.opposite)}</p>
           </div>
           <div className="mt-2 border-t border-border pt-2 text-[10px] text-muted-foreground">
             <p>

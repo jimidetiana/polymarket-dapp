@@ -57,6 +57,40 @@ describe('盘口默认折叠', () => {
   })
 })
 
+describe('盘口水位接入', () => {
+  const marketGraph = () => buildMarketGraph({ id: 'test', homeTeamEn: 'Home FC', awayTeamEn: 'Away FC' }, [{
+    id: 'spread', conditionId: 'condition', questionEn: 'Spread: Home FC (-1.5)', line: -1.5,
+    outcomes: ['Home FC', 'Away FC'], clobTokenIds: ['home', 'away'], volume: 100_000,
+  }])
+  const draw = (sample: boolean) => {
+    const g = marketGraph()
+    if (sample) g.volumeSample = { byToken: { home: 80, away: 20 }, count: 2, oldest: 1000, newest: 1100 }
+    return renderToStaticMarkup(<MarketGraphCanvas
+      graph={g} slots={resolveTemplate(g, goals)} templateEdges={TEMPLATE_EDGES}
+      goals={goals} priceMode="prob" prevPrices={{}} selectedKey={null} onSelect={vi.fn()}
+    />)
+  }
+
+  it('同盘两个槽位都有水位，空槽和推断进球不画；同时提供数值表', () => {
+    const html = draw(true)
+    expect(html.match(/data-volume-ring=""/g)).toHaveLength(2)
+    expect(html.match(/stroke-dasharray="100 100"/g)).toHaveLength(2)
+    expect(html.match(/stroke-dasharray="25 100"/g)).toHaveLength(2)
+    expect(html).toContain('<table')
+    expect(html).toContain('近期成交额')
+    expect(html).toContain('左正向')
+    expect(html).toContain('右反向')
+  })
+
+  it('没有样本时保留空圈，不拿盘口总成交量硬拆两侧', () => {
+    const html = draw(false)
+    expect(html.match(/data-volume-ring=""/g)).toHaveLength(2)
+    expect(html).not.toContain('pathLength="100"')
+    expect(html).toContain('暂无成交样本')
+  })
+})
+
+
 describe('触摸手势', () => {
   it('容器 touch-action 恒为 none，不把双指手势让给浏览器', () => {
     // 改回 pan-y 会让浏览器在手势**开始时**就把双指捏合判成「缩放整页」，

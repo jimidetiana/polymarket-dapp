@@ -70,6 +70,15 @@ function buildMockGraph(): MarketGraph {
       primarySide = sideName
     }
 
+    sides.push({
+      name: bind.family === 'ou' ? 'Under' : bind.family === 'moneyline' ? 'No' : bind.side === 'home' ? AWAY_EN : HOME_EN,
+      tokenId: `token-${slot.key}-opposite`,
+      price: 1 - price,
+      bid: ask == null ? null : 1 - ask,
+      ask: bid == null ? null : 1 - bid,
+      quoted,
+    })
+
     const impact: GoalImpact = {
       homeGoal: Math.random() > 0.5 ? 'up' : 'down',
       awayGoal: Math.random() > 0.5 ? 'up' : 'down',
@@ -99,6 +108,12 @@ function buildMockGraph(): MarketGraph {
 
   return {
     eventId: 'mock-event',
+    volumeSample: {
+      byToken: Object.fromEntries(nodes.flatMap((n, i) => n.sides.map((s, j) => [s.tokenId!, ((i * 3 + j * 5) % 11) * 1000]))),
+      count: 1000,
+      oldest: null,
+      newest: null,
+    },
     homeTeamEn: HOME_EN,
     awayTeamEn: AWAY_EN,
     homeTeamZh: HOME_ZH,

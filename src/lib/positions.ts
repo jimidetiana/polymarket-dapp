@@ -374,6 +374,19 @@ export async function fetchMarketPositions(
   return rows.map(toPosition).filter((p): p is PolyPosition => p != null)
 }
 
+export const VOLUME_TRADE_LIMIT = 1000
+
+/** 公共近期成交样本：只取撮合的 taker 行，避免把同一笔 maker/taker 重复累计。 */
+export async function fetchRecentMarketTrades(conditionIds: readonly string[]): Promise<PolyTrade[]> {
+  if (!conditionIds.length) return []
+  const rows = await get('/trades', {
+    market: conditionIds.join(','),
+    takerOnly: 'true',
+    limit: VOLUME_TRADE_LIMIT,
+  })
+  return rows.map(toTrade).filter((t): t is PolyTrade => t != null)
+}
+
 /**
  * 某张盘口上的成交明细，新的在前。
  *

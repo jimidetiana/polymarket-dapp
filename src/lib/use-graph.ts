@@ -31,6 +31,8 @@ import { tr, useLang } from './i18n'
 import { createClobWs, type ClobWs, type ConnState } from './clob-ws'
 import { toLiveQuotes, type Quote } from './book'
 import { DEFAULT_TICK, type TickSize } from './tick'
+import { fetchRecentMarketTrades } from './positions'
+import { summarizeVolume } from './market-volume'
 import type { MarketGraph } from '../graph/types'
 import type { ResolvedSlot } from '../graph/template'
 
@@ -232,6 +234,19 @@ export function useMarketGraph(match: SoccerMatch | null): GraphState {
     })
   }, [match, markets, lang])
 
+  const conditionKey = useMemo(() => [...new Set(baseGraph?.nodes
+    .map((n) => n.conditionId).filter((id): id is string => !!id) ?? [])].sort().join(','), [baseGraph])
+  const volumeQ = useQuery({
+    queryKey: ['market-volume-sample', conditionKey],
+    queryFn: () => fetchRecentMarketTrades(conditionKey.split(',')),
+    enabled: !!conditionKey,
+    staleTime: 60_000,
+    refetchInterval: 60_000,
+    retry: 1,
+  })
+  const volumeSample = useMemo(() => baseGraph && volumeQ.data
+    ? summarizeVolume(volumeQ.data, baseGraph.nodes) : undefined, [baseGraph, volumeQ.data])
+
   /**
    * 要订阅的 token 列表。
    *
@@ -309,14 +324,14 @@ export function useMarketGraph(match: SoccerMatch | null): GraphState {
    */
   const graph = useMemo(() => {
     if (!baseGraph) return null
-    if (quotedCount === 0) return baseGraph
     const minute = matchMinute(match?.endDate ?? null)
-    return applyLivePrices(baseGraph, liveQuotes, {
+    const priced = quotedCount === 0 ? baseGraph : applyLivePrices(baseGraph, liveQuotes, {
       homeGoals: 0,
       awayGoals: 0,
       minute,
     })
-  }, [baseGraph, liveQuotes, quotedCount, match?.endDate])
+    return { ...priced, volumeSample }
+  }, [baseGraph, liveQuotes, quotedCount, match?.endDate, volumeSample])
 
   const goals = useMemo(
     () => (graph ? inferGoalCounts(graph, matchMinute(match?.endDate ?? null)) : null),
